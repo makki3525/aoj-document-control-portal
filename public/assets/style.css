@@ -89,7 +89,8 @@ img { max-width: 100%; display: block; }
 
 /* ── Hero ───────────────────────────────────────────────────────────────── */
 .hero {
-  position: relative; overflow: hidden;
+  position: relative; overflow: visible;
+  z-index: 30;
   background:
     radial-gradient(1200px 500px at 80% -10%, rgba(200,16,46,.14), transparent 60%),
     radial-gradient(900px 400px at 10% 110%, rgba(11,61,145,.10), transparent 60%),
@@ -112,7 +113,7 @@ img { max-width: 100%; display: block; }
   font-size: 18px; color: var(--muted); max-width: 640px; margin: 0 auto 34px;
 }
 .search-wrap {
-  max-width: 640px; margin: 0 auto; position: relative;
+  max-width: 640px; margin: 0 auto; position: relative; z-index: 60;
 }
 .search-input {
   width: 100%; padding: 18px 60px 18px 52px; border-radius: 14px;
@@ -133,8 +134,9 @@ img { max-width: 100%; display: block; }
 .search-results {
   position: absolute; top: calc(100% + 8px); left: 0; right: 0;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  box-shadow: var(--shadow); max-height: 420px; overflow-y: auto; text-align: left;
-  z-index: 40; display: none;
+  box-shadow: 0 20px 50px rgba(0,0,0,.35), var(--shadow);
+  max-height: 420px; overflow-y: auto; text-align: left;
+  z-index: 100; display: none;
 }
 .search-results.open { display: block; }
 .sr-item {
@@ -198,7 +200,8 @@ img { max-width: 100%; display: block; }
 
 /* ── Connect banner ─────────────────────────────────────────────────────── */
 .connect-banner {
-  max-width: 1240px; margin: 0 auto; padding: 0 24px;
+  max-width: 1240px; margin: 24px auto 0; padding: 0 24px;
+  position: relative; z-index: 1;
 }
 .cb-inner {
   background: linear-gradient(135deg, var(--surface), var(--surface-2));
