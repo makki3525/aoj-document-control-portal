@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projects — AOJ Document Control Portal</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <h2>All Projects</h2>
+        <p>Filter by status or location. Click any card to open its documents.</p>
+      </div>
+      <div class="filter-bar" id="filterBar">
+        <button class="chip active" data-f="all">All</button>
+        <button class="chip" data-f="ongoing">Ongoing</button>
+        <button class="chip" data-f="tender">Tender</button>
+      </div>
+    </div>
+    <div style="margin-bottom:22px; max-width:420px;">
+      <input id="q" class="search-input" placeholder="Filter by name or location…" style="padding:12px 18px; font-size:14px;">
+    </div>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <div id="foot-slot"></div>
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('projects');
+    document.getElementById('foot-slot').innerHTML = renderFooter();
+    refreshAuthArea();
+
+    let filter = 'all';
+    const q = document.getElementById('q');
+    const grid = document.getElementById('grid');
+    function render() {
+      const t = q.value.trim().toLowerCase();
+      const list = PROJECTS.filter(p =>
+        (filter === 'all' || p.status === filter) &&
+        (!t || p.name.toLowerCase().includes(t) || p.location.toLowerCase().includes(t))
+      );
+      grid.innerHTML = list.length ? list.map(projectCard).join('') : `<div class="empty">No projects match.</div>`;
+    }
+    render();
+    q.addEventListener('input', render);
+    document.getElementById('filterBar').addEventListener('click', e => {
+      const b = e.target.closest('.chip'); if (!b) return;
+      document.querySelectorAll('#filterBar .chip').forEach(c => c.classList.remove('active'));
+      b.classList.add('active'); filter = b.dataset.f; render();
+    });
+  </script>
+</body>
+</html>

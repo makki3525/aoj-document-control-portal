@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project — AOJ Document Control Portal</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <section class="project-hero" id="phero"></section>
+
+  <section class="section" style="padding-top:32px;">
+    <div style="margin-bottom:20px; max-width:520px;">
+      <div class="search-wrap">
+        <span class="search-icon" id="searchIcon"></span>
+        <input id="projSearch" class="search-input" placeholder="Search within this project…" style="padding:14px 18px 14px 48px; font-size:14.5px;">
+        <div id="searchResults" class="search-results"></div>
+      </div>
+    </div>
+    <div id="tabPane"></div>
+  </section>
+
+  <div id="foot-slot"></div>
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('projects');
+    document.getElementById('foot-slot').innerHTML = renderFooter();
+    document.getElementById('searchIcon').innerHTML = ICONS.search;
+    refreshAuthArea();
+
+    const id = location.pathname.split('/').filter(Boolean).pop();
+    const p  = PROJECTS.find(x => x.id === id);
+    if (!p) { document.body.innerHTML = '<div class="empty" style="padding:120px;">Project not found. <a href="/projects">← All projects</a></div>'; }
+
+    const SECTIONS = {
+      confidential: {
+        label: 'Confidential', locked: true,
+        categories: ['Contracts', 'Letters', 'RFIs'],
+      },
+      logs: {
+        label: 'Logs', locked: false,
+        categories: ['Master Log','WIR & MIR Logs','Request to Start Work Log','Letters Log','Request for Information Log','RTS Log','Other Logs'],
+      },
+      softcopies: {
+        label: 'Soft Copies', locked: false,
+        categories: ['Tender Drawings','BOQ','IFC Drawings','Shop Drawings','Method Statements','Pre Qualification Documents','Material Submittals','Sample Submittals','WIR','MIR','NCR','Other Non Confidential Documents'],
+      },
+    };
+
+    // Hero
+    document.getElementById('phero').innerHTML = `
+      <div class="ph-inner">
+        <div class="crumbs"><a href="/">Home</a> · <a href="/projects">Projects</a> · <span>${p.name}</span></div>
+        <div class="ph-title-row">
+          <div>
+            <h1>${p.name}</h1>
+            <div class="card-loc" style="margin-top:8px;">${ICONS.location} ${p.location}</div>
+          </div>
+          <span class="card-badge badge-${p.status}" style="position:static;">${p.status}</span>
+        </div>
+        <div class="ph-meta">
+          ${p.reference   ? `<div><b>Reference</b>${p.reference}</div>` : ''}
+          ${p.client      ? `<div><b>Client</b>${p.client}</div>` : ''}
+          ${p.consultant  ? `<div><b>Consultant</b>${p.consultant}</div>` : ''}
+          ${p.engineer    ? `<div><b>Engineer</b>${p.engineer}</div>` : ''}
+          ${p.pmc         ? `<div><b>PMC</b>${p.pmc}</div>` : ''}
+          ${p.developer   ? `<div><b>Developer</b>${p.developer}</div>` : ''}
+          ${p.value       ? `<div><b>Value</b>${p.value}</div>` : ''}
+          ${p.duration    ? `<div><b>Duration</b>${p.duration}</div>` : ''}
+        </div>
+        <div class="tabs" id="tabs">
+          ${Object.entries(SECTIONS).map(([k,s],i) => `
+            <div class="tab ${i===0?'active':''}" data-k="${k}">
+              ${s.locked ? ICONS.lock : ''} ${s.label}
+            </div>`).join('')}
+        </div>
+      </div>`;
+
+    // Tab pane
+    let active = 'confidential';
+    let me = null;
+    (async () => { me = await apiGet('me'); renderTab(); })();
+
+    document.getElementById('tabs').addEventListener('click', e => {
+      const t = e.target.closest('.tab'); if (!t) return;
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      active = t.dataset.k;
+      renderTab();
+    });
+
+    async function renderTab() {
+      const pane = document.getElementById('tabPane');
+      const sec  = SECTIONS[active];
+
+      if (sec.locked && (!me || !me.connected)) {
+        pane.innerHTML = `
+          <div class="file-list">
+            <div class="empty">
+              <div style="font-size:34px; margin-bottom:14px;">🔒</div>
+              <h3 style="margin:0 0 8px;">Confidential documents</h3>
+              <p style="max-width:420px; margin:0 auto 20px;">Sign in with an authorized Google account to view Contracts, Letters and RFIs for this project.</p>
+              <a class="btn btn-primary" href="/api/drive?action=oauth_start">${ICONS.google} Sign in with Google</a>
+            </div>
+          </div>`;
+        return;
+      }
+
+      if (!me || !me.connected) {
+        pane.innerHTML = `
+          <div class="file-list"><div class="empty">
+            <p>Connect your Google Drive to browse documents in this section.</p>
+            <a class="btn btn-primary" href="/api/drive?action=oauth_start" style="margin-top:12px;">${ICONS.google} Connect Drive</a>
+          </div></div>`;
+        return;
+      }
+
+      // For now (no admin link mapping yet), show the categories as browsable buckets
+      // and pull recent matching files from the user's Drive by searching category keywords.
+      pane.innerHTML = `
+        <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">
+          ${sec.categories.map(cat => `
+            <div class="card" style="cursor:default;">
+              <div class="card-body">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                  <div class="sr-icon">${ICONS.folder}</div>
+                  <h3 class="card-title" style="margin:0;">${cat}</h3>
+                </div>
+                <div class="card-desc" id="cat-${slug(cat)}">
+                  <span class="spinner"></span> <span style="margin-left:8px;">Loading…</span>
+                </div>
+                <a class="btn btn-ghost btn-sm" style="justify-content:center;" href="#" onclick="return searchInDrive(event, '${cat.replace(/'/g,"\\'")} ${p.name.split('–')[0].trim().replace(/'/g,"\\'")}')">Search "${cat}" ${ICONS.open}</a>
+              </div>
+            </div>`).join('')}
+        </div>`;
+
+      // Populate each category with a top-3 preview from the user's Drive
+      sec.categories.forEach(async cat => {
+        const el = document.getElementById('cat-' + slug(cat));
+        const q  = `${cat} ${p.name.split('–')[0].trim()}`;
+        const r  = await apiGet('search', { q });
+        if (!r.items || !r.items.length) {
+          el.innerHTML = `<span style="color:var(--muted); font-size:13px;">No matches yet.</span>`;
+          return;
+        }
+        el.innerHTML = r.items.slice(0, 3).map(it => `
+          <a href="${it.link}" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:8px; padding:6px 0; color:var(--text); font-size:13px; border-bottom:1px solid var(--border);">
+            <span style="color:var(--muted);">${it.type === 'folder' ? ICONS.folder : ICONS.file}</span>
+            <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(it.name)}</span>
+          </a>`).join('');
+      });
+    }
+
+    function slug(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
+    function searchInDrive(e, q) {
+      e.preventDefault();
+      document.getElementById('projSearch').value = q;
+      document.getElementById('projSearch').dispatchEvent(new Event('input'));
+      document.getElementById('projSearch').focus();
+      window.scrollTo({ top: document.querySelector('.section').offsetTop - 80, behavior: 'smooth' });
+      return false;
+    }
+    window.searchInDrive = searchInDrive;
+
+    attachSearch(document.getElementById('projSearch'), document.getElementById('searchResults'));
+  </script>
+</body>
+</html>

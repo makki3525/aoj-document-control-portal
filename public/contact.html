@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contact — AOJ Contracting Co LLC</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <section class="section" style="max-width:720px;">
+    <span style="display:inline-flex; padding:6px 14px; border:1px solid var(--border); background:var(--surface); border-radius:999px; font-size:12.5px; font-weight:600; color:var(--muted); margin-bottom:22px;">Contact</span>
+    <h1 style="font-size:38px; font-weight:800; letter-spacing:-0.025em; margin:0 0 16px;">Get in touch with Document Control</h1>
+    <p style="color:var(--muted); font-size:17px; line-height:1.7; margin-bottom:36px;">
+      For access requests, drawing revisions, RFIs or any documentation matter, reach the
+      document control desk directly.
+    </p>
+
+    <div class="card"><div class="card-body">
+      <div style="display:flex; gap:14px; align-items:center; margin-bottom:14px;">
+        <div class="cb-icon" style="width:44px; height:44px;">✉</div>
+        <div>
+          <div style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;">Document Control</div>
+          <a href="mailto:dc@aoj-sa.com" style="font-size:18px; font-weight:700; color:var(--brand);">dc@aoj-sa.com</a>
+        </div>
+      </div>
+      <div style="display:flex; gap:14px; align-items:center;">
+        <div class="cb-icon" style="width:44px; height:44px;">🌐</div>
+        <div>
+          <div style="font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;">Company Website</div>
+          <a href="https://aoj-sa.com/" target="_blank" rel="noopener" style="font-size:16px; font-weight:600;">aoj-sa.com</a>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <div id="foot-slot"></div>
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('contact');
+    document.getElementById('foot-slot').innerHTML = renderFooter();
+    refreshAuthArea();
+  </script>
+</body>
+</html>

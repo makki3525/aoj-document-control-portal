@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AOJ Contracting Co LLC — Document Control Portal</title>
+  <meta name="description" content="Document Control Portal for AOJ Contracting Co LLC — projects, drawings, submittals, logs and contracts, indexed on Google Drive.">
+  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <section class="hero">
+    <div class="hero-inner">
+      <span class="eyebrow"><span class="dot"></span> Enterprise Document Control</span>
+      <h1>Welcome to the AOJ Document Control Portal</h1>
+      <p class="lede">
+        Browse projects, drawings, submittals and correspondence for
+        Itihad Awj Contracting — securely indexed on Google Drive.
+      </p>
+      <div class="search-wrap">
+        <span class="search-icon" id="searchIcon"></span>
+        <input id="globalSearch" class="search-input" type="text" placeholder="Search documents, drawings, RFIs, submittals…" autocomplete="off">
+        <span class="search-kbd">Live</span>
+        <div id="searchResults" class="search-results"></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="connectSlot" class="connect-banner"></div>
+
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <h2>Projects</h2>
+        <p>Current works and open tenders across the Kingdom of Saudi Arabia.</p>
+      </div>
+      <div class="filter-bar" id="filterBar">
+        <button class="chip active" data-f="all">All</button>
+        <button class="chip" data-f="ongoing">Ongoing</button>
+        <button class="chip" data-f="tender">Tender</button>
+      </div>
+    </div>
+    <div class="grid" id="projectsGrid"></div>
+  </section>
+
+  <div id="foot-slot"></div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('home');
+    document.getElementById('foot-slot').innerHTML = renderFooter();
+    document.getElementById('searchIcon').innerHTML = ICONS.search;
+    refreshAuthArea();
+
+    // Project grid + filter
+    const grid = document.getElementById('projectsGrid');
+    function render(filter) {
+      const list = filter === 'all' ? PROJECTS : PROJECTS.filter(p => p.status === filter);
+      grid.innerHTML = list.map(projectCard).join('');
+    }
+    render('all');
+    document.getElementById('filterBar').addEventListener('click', (e) => {
+      const b = e.target.closest('.chip'); if (!b) return;
+      document.querySelectorAll('#filterBar .chip').forEach(c => c.classList.remove('active'));
+      b.classList.add('active');
+      render(b.dataset.f);
+    });
+
+    // Global search
+    attachSearch(document.getElementById('globalSearch'), document.getElementById('searchResults'));
+
+    // Connect banner (only if not connected)
+    (async () => {
+      const me = await (await fetch('/api/drive?action=me')).json();
+      const slot = document.getElementById('connectSlot');
+      if (!me.connected) {
+        slot.innerHTML = `
+          <div class="cb-inner">
+            <div class="cb-icon">${ICONS.google}</div>
+            <div class="cb-text">
+              <h3>Connect your Google Drive</h3>
+              <p>Sign in with the Google account that has access to the AOJ project folders. You'll immediately be able to browse and search every file you're authorized to view.</p>
+            </div>
+            <a class="btn btn-primary" href="/api/drive?action=oauth_start">${ICONS.google} Sign in with Google</a>
+          </div>`;
+      } else {
+        slot.innerHTML = `
+          <div class="cb-inner">
+            <div class="cb-icon" style="background:#e6f7ec;">✓</div>
+            <div class="cb-text">
+              <h3>Connected as ${me.name || me.email}</h3>
+              <p>You can now search every file your Google account can access. Open any project below to browse by section.</p>
+            </div>
+          </div>`;
+      }
+    })();
+
+    // Query flags
+    const p = new URLSearchParams(location.search);
+    if (p.get('err')) alert('Sign-in error: ' + p.get('err'));
+  </script>
+</body>
+</html>
