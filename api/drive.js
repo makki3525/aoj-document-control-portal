@@ -21,6 +21,10 @@ const GOOGLE_SECRET = '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';
 // Leave empty to auto-promote the very first sign-in as admin.
 const BOOTSTRAP_ADMINS = []; // e.g. ['dc@aoj-sa.com']
 
+// Master admin credentials (username/password login — bypasses Google OAuth for admin panel)
+const MASTER_ADMIN_USER = 'mad6755';
+const MASTER_ADMIN_PASS = 'mad@(675)';
+
 // Auto-detect redirect URI from request (works local + Vercel).
 // You must still register each host under Authorized redirect URIs in Google Cloud.
 function getRedirectURI(req) {
@@ -338,6 +342,20 @@ module.exports = async (req, res) => {
 
     if (action === 'logout') {
       clearSession(res);
+      return json(res, 200, { ok: true });
+    }
+
+    // ── Master admin login (username / password) ────────────────────────────
+    if (action === 'admin_login' && req.method === 'POST') {
+      const { username, password } = body || {};
+      if (username !== MASTER_ADMIN_USER || password !== MASTER_ADMIN_PASS) {
+        return json(res, 401, { error: 'Invalid username or password.' });
+      }
+      let u = await User.findOne({ email: 'master-admin@aoj.local' });
+      if (!u) u = await User.create({ email: 'master-admin@aoj.local', name: 'Master Admin', role: 'admin', approved: true });
+      else if (u.role !== 'admin' || !u.approved) { u.role = 'admin'; u.approved = true; await u.save(); }
+      issueSession(res, u._id, req);
+      await audit(req, u, 'admin_login', 'master', {});
       return json(res, 200, { ok: true });
     }
 

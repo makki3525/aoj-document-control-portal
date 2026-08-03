@@ -6,31 +6,22 @@
   <title>Admin — AOJ Document Control Portal</title>
   <link rel="stylesheet" href="/assets/style.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    .login-wrap { min-height: calc(100vh - 71px); display: grid; place-items: center; padding: 40px 20px; background: var(--bg); }
+    .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 40px; width: 100%; max-width: 420px; box-shadow: var(--shadow-lg); }
+    .login-card h2 { margin: 0 0 6px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+    .login-card .sub { color: var(--muted); font-size: 14px; margin-bottom: 26px; }
+    .login-err { background: var(--brand-soft); color: var(--brand); padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; margin-bottom: 16px; display: none; }
+    .login-err.on { display: block; }
+    .login-or { text-align: center; color: var(--muted); font-size: 12px; margin: 20px 0; position: relative; }
+    .login-or::before, .login-or::after { content: ''; position: absolute; top: 50%; width: 40%; height: 1px; background: var(--border); }
+    .login-or::before { left: 0; } .login-or::after { right: 0; }
+  </style>
 </head>
 <body>
   <div id="nav-slot"></div>
 
-  <div class="admin-layout">
-    <aside class="admin-side">
-      <h4>Manage</h4>
-      <div class="admin-nav">
-        <a data-tab="dash" class="active">📊 Dashboard</a>
-        <a data-tab="projects">🏗 Projects</a>
-        <a data-tab="categories">📁 Categories</a>
-        <a data-tab="users">👥 Users</a>
-        <a data-tab="requests">🔑 Access Requests</a>
-        <a data-tab="audit">📜 Audit Log</a>
-      </div>
-      <h4>Portal</h4>
-      <div class="admin-nav">
-        <a href="/">← Back to portal</a>
-      </div>
-    </aside>
-
-    <main class="admin-main" id="main">
-      <div class="loading"><span class="spinner"></span></div>
-    </main>
-  </div>
+  <div id="root"><div class="loading"><span class="spinner"></span></div></div>
 
   <div class="modal-bg" id="modal">
     <div class="modal" id="modalBox"></div>
@@ -43,44 +34,104 @@
 
     let projectsCache = [];
 
-    // Guard: must be admin
+    // Entry point: check current user
     (async () => {
       const me = await apiGet('me');
-      if (!me.connected || me.role !== 'admin') {
-        document.getElementById('main').innerHTML = `
-          <div class="empty" style="padding:80px;">
-            <div style="font-size:38px; margin-bottom:14px;">🔒</div>
-            <h3>Admin access required</h3>
-            <p>Sign in with an admin Google account.</p>
-            <a class="btn btn-primary" href="${API}?action=oauth_start&return=/admin" style="margin-top:16px;">${ICONS.google} Sign in</a>
-          </div>`;
-        return;
-      }
-      showTab('dash');
+      if (me.connected && me.role === 'admin') { renderPanel(); }
+      else { renderLogin(); }
     })();
 
-    document.querySelectorAll('.admin-nav a[data-tab]').forEach(a => {
-      a.addEventListener('click', () => {
-        document.querySelectorAll('.admin-nav a').forEach(x => x.classList.remove('active'));
-        a.classList.add('active');
-        showTab(a.dataset.tab);
+    // ── Login screen ─────────────────────────────────────────────────────
+    function renderLogin() {
+      document.getElementById('root').innerHTML = `
+        <div class="login-wrap"><div class="login-card">
+          <div style="width:52px; height:52px; border-radius:12px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); display:grid; place-items:center; color:#fff; margin-bottom:18px;">${ICONS.shield}</div>
+          <h2>Admin Sign In</h2>
+          <p class="sub">Enter your master credentials to open the admin panel.</p>
+          <div class="login-err" id="loginErr"></div>
+          <div class="field">
+            <label>Username</label>
+            <input id="lUser" autocomplete="username" placeholder="username">
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="lPass" type="password" autocomplete="current-password" placeholder="••••••••">
+          </div>
+          <button class="btn btn-primary btn-lg" id="lBtn" style="width:100%;">Sign in to Admin</button>
+          <div class="login-or">OR</div>
+          <a class="btn btn-ghost" href="${API}?action=oauth_start&return=/admin" style="width:100%;">${ICONS.google} Sign in with Google (admin account)</a>
+          <div style="text-align:center; margin-top:18px;"><a href="/" style="color:var(--muted); font-size:13px;">← Back to portal</a></div>
+        </div></div>`;
+      const u = document.getElementById('lUser'), p = document.getElementById('lPass'), err = document.getElementById('loginErr');
+      const submit = async () => {
+        err.classList.remove('on');
+        const btn = document.getElementById('lBtn');
+        btn.disabled = true; btn.textContent = 'Signing in…';
+        const r = await apiPost('admin_login', { username: u.value, password: p.value });
+        if (r.ok) { location.reload(); }
+        else { err.textContent = r.error || 'Login failed'; err.classList.add('on'); btn.disabled = false; btn.textContent = 'Sign in to Admin'; }
+      };
+      document.getElementById('lBtn').addEventListener('click', submit);
+      [u, p].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); }));
+      u.focus();
+    }
+
+    // ── Admin panel ──────────────────────────────────────────────────────
+    function renderPanel() {
+      document.getElementById('root').innerHTML = `
+        <div class="admin-layout">
+          <aside class="admin-side">
+            <h4>Manage</h4>
+            <div class="admin-nav">
+              <a data-tab="dash" class="active">📊 Dashboard</a>
+              <a data-tab="projects">🏗 Projects</a>
+              <a data-tab="categories">📁 Categories</a>
+              <a data-tab="users">👥 Users</a>
+              <a data-tab="requests">🔑 Access Requests</a>
+              <a data-tab="audit">📜 Audit Log</a>
+            </div>
+            <h4>Session</h4>
+            <div class="admin-nav">
+              <a href="/">← Back to portal</a>
+              <a onclick="signOut()" style="color:var(--brand); cursor:pointer;">🚪 Sign out</a>
+            </div>
+          </aside>
+          <main class="admin-main" id="main">
+            <div class="loading"><span class="spinner"></span></div>
+          </main>
+        </div>`;
+      document.querySelectorAll('.admin-nav a[data-tab]').forEach(a => {
+        a.addEventListener('click', () => {
+          document.querySelectorAll('.admin-nav a[data-tab]').forEach(x => x.classList.remove('active'));
+          a.classList.add('active');
+          showTab(a.dataset.tab);
+        });
       });
-    });
+      showTab('dash');
+    }
+
+    async function signOut() { await apiGet('logout'); location.reload(); }
+    window.signOut = signOut;
+
+    async function safeCall(fn, m) {
+      try { await fn(); }
+      catch (e) {
+        console.error(e);
+        m.innerHTML = `<div class="empty" style="padding:60px;"><h3>Something went wrong</h3><p>${escapeHtml(e.message || 'Failed to load')}</p><button class="btn btn-primary" onclick="location.reload()" style="margin-top:14px;">Reload</button></div>`;
+      }
+    }
 
     async function showTab(tab) {
       const m = document.getElementById('main');
       m.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
-      if (tab === 'dash')       return renderDash(m);
-      if (tab === 'projects')   return renderProjects(m);
-      if (tab === 'categories') return renderCategories(m);
-      if (tab === 'users')      return renderUsers(m);
-      if (tab === 'requests')   return renderRequests(m);
-      if (tab === 'audit')      return renderAudit(m);
+      const fns = { dash: renderDash, projects: renderProjects, categories: renderCategories, users: renderUsers, requests: renderRequests, audit: renderAudit };
+      await safeCall(() => fns[tab](m), m);
     }
 
-    // ── Dashboard ─────────────────────────────────────────────────────────
+    // ── Dashboard ────────────────────────────────────────────────────────
     async function renderDash(m) {
       const s = await apiGet('admin_stats');
+      if (s.error) throw new Error(s.error);
       m.innerHTML = `
         <div class="admin-h"><div>
           <h1>Dashboard</h1>
@@ -97,15 +148,18 @@
           <h3 style="margin-top:0;">Quick actions</h3>
           <div style="display:flex; gap:10px; flex-wrap:wrap;">
             <button class="btn btn-primary" onclick="editProject()">+ New Project</button>
-            <button class="btn btn-ghost" onclick="document.querySelector('[data-tab=categories]').click()">Map Drive Links</button>
-            <button class="btn btn-ghost" onclick="document.querySelector('[data-tab=requests]').click()">Review Requests</button>
+            <button class="btn btn-ghost" onclick="goTab('categories')">Map Drive Links</button>
+            <button class="btn btn-ghost" onclick="goTab('requests')">Review Requests</button>
           </div>
         </div>`;
     }
+    function goTab(t) { document.querySelector(`[data-tab="${t}"]`).click(); }
+    window.goTab = goTab;
 
-    // ── Projects ──────────────────────────────────────────────────────────
+    // ── Projects ─────────────────────────────────────────────────────────
     async function renderProjects(m) {
       const r = await apiGet('admin_projects');
+      if (r.error) throw new Error(r.error);
       projectsCache = r.projects || [];
       m.innerHTML = `
         <div class="admin-h">
@@ -114,7 +168,7 @@
         </div>
         <table class="data">
           <thead><tr><th>Name</th><th>Reference</th><th>Location</th><th>Status</th><th>Active</th><th></th></tr></thead>
-          <tbody>${r.projects.map(p => `
+          <tbody>${projectsCache.map(p => `
             <tr>
               <td><b>${escapeHtml(p.name)}</b></td>
               <td>${escapeHtml(p.reference || '—')}</td>
@@ -125,18 +179,19 @@
                 <button class="btn btn-ghost btn-sm" onclick='editProject(${JSON.stringify(p._id)})'>Edit</button>
                 <button class="btn btn-danger btn-sm" onclick='delProject(${JSON.stringify(p._id)})'>Archive</button>
               </td>
-            </tr>`).join('')}</tbody>
+            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:32px;">No projects yet — click "+ New Project" above.</td></tr>'}
+          </tbody>
         </table>`;
     }
     async function editProject(id) {
-      let p = { name:'', slug:'', reference:'', location:'', status:'ongoing', client:'', consultant:'', engineer:'', pmc:'', developer:'', value:'', duration:'', description:'', cover:1, drive_root:'', sort:0 };
+      let p = { name:'', slug:'', reference:'', location:'', status:'ongoing', client:'', consultant:'', engineer:'', pmc:'', developer:'', value:'', duration:'', description:'', cover:1, drive_root:'' };
       if (id) {
-        const r = await apiGet('admin_projects');
-        p = r.projects.find(x => x._id === id) || p;
+        if (!projectsCache.length) { const r = await apiGet('admin_projects'); projectsCache = r.projects || []; }
+        p = projectsCache.find(x => x._id === id) || p;
       }
       openModal(id ? 'Edit Project' : 'New Project', `
         <div class="field-row">
-          <div class="field"><label>Slug (URL)</label><input id="f-slug" value="${escapeHtml(p.slug||'')}" ${id?'disabled':''} placeholder="my-project"></div>
+          <div class="field"><label>Slug (URL) *</label><input id="f-slug" value="${escapeHtml(p.slug||'')}" ${id?'disabled':''} placeholder="my-project"></div>
           <div class="field"><label>Reference</label><input id="f-reference" value="${escapeHtml(p.reference||'')}"></div>
         </div>
         <div class="field"><label>Project Name *</label><input id="f-name" value="${escapeHtml(p.name||'')}"></div>
@@ -165,42 +220,52 @@
         <div class="field"><label>Drive Root Folder URL (optional)</label><input id="f-drive_root" value="${escapeHtml(p.drive_root||'')}" placeholder="https://drive.google.com/drive/folders/..."></div>
       `, async () => {
         const data = {};
-        ['slug','reference','name','location','status','client','consultant','engineer','pmc','developer','value','duration','description','drive_root'].forEach(k => { const el = document.getElementById('f-'+k); data[k] = el.disabled ? p[k] : el.value.trim(); });
+        ['slug','reference','name','location','status','client','consultant','engineer','pmc','developer','value','duration','description','drive_root'].forEach(k => {
+          const el = document.getElementById('f-'+k); if (el) data[k] = el.disabled ? (p[k] || '') : el.value.trim();
+        });
         data.cover = parseInt(document.getElementById('f-cover').value) || 1;
         if (id) data._id = id;
+        if (!data.slug || !data.name) return toast('Slug and Name are required', 'err');
         const r = await apiPost('admin_project_save', data);
         if (r.error) return toast(r.error, 'err');
-        toast('Saved.'); closeModal(); renderProjects(document.getElementById('main'));
+        toast('Project saved.'); closeModal(); showTab('projects');
       });
     }
     async function delProject(id) {
-      if (!confirm('Archive this project?')) return;
-      await apiPost('admin_project_delete', { _id: id });
-      toast('Archived.'); renderProjects(document.getElementById('main'));
+      if (!confirm('Archive this project? It will be hidden from the public site.')) return;
+      const r = await apiPost('admin_project_delete', { _id: id });
+      if (r.error) return toast(r.error, 'err');
+      toast('Archived.'); showTab('projects');
     }
     window.editProject = editProject; window.delProject = delProject;
 
-    // ── Categories ────────────────────────────────────────────────────────
+    // ── Categories ───────────────────────────────────────────────────────
     async function renderCategories(m) {
-      if (!projectsCache.length) { const r = await apiGet('admin_projects'); projectsCache = r.projects; }
-      const pid = localStorage.getItem('adm-pid') || (projectsCache[0]?._id);
-      const r = await apiGet('admin_categories', pid ? { projectId: pid } : {});
+      if (!projectsCache.length) { const r = await apiGet('admin_projects'); projectsCache = r.projects || []; }
+      if (!projectsCache.length) {
+        m.innerHTML = `<div class="empty" style="padding:60px;"><h3>No projects yet</h3><p>Create a project first before adding categories.</p><button class="btn btn-primary" onclick="goTab('projects')" style="margin-top:14px;">Go to Projects</button></div>`;
+        return;
+      }
+      let pid = localStorage.getItem('adm-pid');
+      if (!pid || !projectsCache.find(p => p._id === pid)) pid = projectsCache[0]._id;
+      const r = await apiGet('admin_categories', { projectId: pid });
+      if (r.error) throw new Error(r.error);
       const groups = { confidential: [], logs: [], softcopies: [] };
-      r.categories.forEach(c => { if (groups[c.section]) groups[c.section].push(c); });
+      (r.categories || []).forEach(c => { if (groups[c.section]) groups[c.section].push(c); });
       m.innerHTML = `
         <div class="admin-h">
           <div><h1>Categories &amp; Drive Links</h1><p>Map each category button to a Google Drive folder, file, or Sheet URL.</p></div>
-          <div style="display:flex; gap:10px;">
-            <select id="pickProj" style="padding:10px 14px; border-radius:9px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <select id="pickProj" style="padding:10px 14px; border-radius:9px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-family:inherit;">
               ${projectsCache.map(p => `<option value="${p._id}"${p._id===pid?' selected':''}>${escapeHtml(p.name)}</option>`).join('')}
             </select>
             <button class="btn btn-primary" onclick="editCat()">+ Add Category</button>
           </div>
         </div>
         ${['confidential','logs','softcopies'].map(sec => `
-          <h3 style="margin:24px 0 12px; font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);">${sec}</h3>
-          <table class="data">
-            <thead><tr><th>Name</th><th>Type</th><th>Drive URL</th><th></th></tr></thead>
+          <h3 style="margin:24px 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:700;">${sec}</h3>
+          <table class="data" style="margin-bottom:12px;">
+            <thead><tr><th>Name</th><th>Type</th><th>Drive URL</th><th style="width:180px;"></th></tr></thead>
             <tbody>${groups[sec].map(c => `
               <tr>
                 <td><b>${escapeHtml(c.name)}</b></td>
@@ -212,12 +277,12 @@
                   <button class="btn btn-ghost btn-sm" onclick='editCat(${JSON.stringify(c._id)})'>Edit</button>
                   <button class="btn btn-danger btn-sm" onclick='delCat(${JSON.stringify(c._id)})'>Remove</button>
                 </td>
-              </tr>`).join('') || '<tr><td colspan="4" style="text-align:center; color:var(--muted);">No categories yet.</td></tr>'}
+              </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:20px;">No ${sec} categories yet.</td></tr>`}
             </tbody>
           </table>`).join('')}`;
       document.getElementById('pickProj').addEventListener('change', e => {
         localStorage.setItem('adm-pid', e.target.value);
-        renderCategories(document.getElementById('main'));
+        showTab('categories');
       });
     }
     async function editCat(id) {
@@ -225,13 +290,13 @@
       let c = { projectId: pid, section: 'softcopies', name: '', drive_url: '', drive_type: 'folder', sort: 0 };
       if (id) {
         const r = await apiGet('admin_categories', { projectId: pid });
-        c = r.categories.find(x => x._id === id) || c;
+        c = (r.categories || []).find(x => x._id === id) || c;
       }
       openModal(id ? 'Edit Category' : 'New Category', `
         <div class="field"><label>Name *</label><input id="c-name" value="${escapeHtml(c.name||'')}"></div>
         <div class="field-row">
           <div class="field"><label>Section</label><select id="c-section">
-            <option value="confidential"${c.section==='confidential'?' selected':''}>Confidential</option>
+            <option value="confidential"${c.section==='confidential'?' selected':''}>Confidential (locked)</option>
             <option value="logs"${c.section==='logs'?' selected':''}>Logs</option>
             <option value="softcopies"${c.section==='softcopies'?' selected':''}>Soft Copies</option>
           </select></div>
@@ -253,27 +318,30 @@
           drive_url: document.getElementById('c-url').value.trim(),
           sort: parseInt(document.getElementById('c-sort').value) || 0,
         };
+        if (!data.name) return toast('Name is required', 'err');
         if (id) data._id = id;
         const r = await apiPost('admin_category_save', data);
         if (r.error) return toast(r.error, 'err');
-        toast('Saved.'); closeModal(); renderCategories(document.getElementById('main'));
+        toast('Saved.'); closeModal(); showTab('categories');
       });
     }
     async function delCat(id) {
       if (!confirm('Remove this category?')) return;
-      await apiPost('admin_category_delete', { _id: id });
-      toast('Removed.'); renderCategories(document.getElementById('main'));
+      const r = await apiPost('admin_category_delete', { _id: id });
+      if (r.error) return toast(r.error, 'err');
+      toast('Removed.'); showTab('categories');
     }
     window.editCat = editCat; window.delCat = delCat;
 
-    // ── Users ─────────────────────────────────────────────────────────────
+    // ── Users ────────────────────────────────────────────────────────────
     async function renderUsers(m) {
       const r = await apiGet('admin_users');
+      if (r.error) throw new Error(r.error);
       m.innerHTML = `
         <div class="admin-h"><div><h1>Users</h1><p>Assign roles and approve confidential access.</p></div></div>
         <table class="data">
-          <thead><tr><th>User</th><th>Role</th><th>Confidential Access</th><th>Last Login</th><th></th></tr></thead>
-          <tbody>${r.users.map(u => `
+          <thead><tr><th>User</th><th>Role</th><th>Confidential Access</th><th>Last Login</th></tr></thead>
+          <tbody>${(r.users || []).map(u => `
             <tr>
               <td>
                 <div style="display:flex; align-items:center; gap:10px;">
@@ -282,7 +350,7 @@
                 </div>
               </td>
               <td>
-                <select onchange='updUser(${JSON.stringify(u._id)}, {role: this.value})' style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+                <select onchange='updUser(${JSON.stringify(u._id)}, {role: this.value})' style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-family:inherit;">
                   <option value="viewer"${u.role==='viewer'?' selected':''}>Viewer</option>
                   <option value="staff"${u.role==='staff'?' selected':''}>Staff</option>
                   <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
@@ -293,24 +361,26 @@
                 <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick='updUser(${JSON.stringify(u._id)}, {approved: ${!u.approved}})'>${u.approved?'Revoke':'Approve'}</button>
               </td>
               <td style="color:var(--muted); font-size:12.5px;">${u.last_login ? new Date(u.last_login).toLocaleString() : '—'}</td>
-              <td></td>
-            </tr>`).join('')}</tbody>
+            </tr>`).join('') || '<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:32px;">No registered users yet.</td></tr>'}
+          </tbody>
         </table>`;
     }
     async function updUser(id, patch) {
-      await apiPost('admin_user_update', { _id: id, ...patch });
-      toast('Updated.'); renderUsers(document.getElementById('main'));
+      const r = await apiPost('admin_user_update', { _id: id, ...patch });
+      if (r.error) return toast(r.error, 'err');
+      toast('Updated.'); showTab('users');
     }
     window.updUser = updUser;
 
-    // ── Access Requests ───────────────────────────────────────────────────
+    // ── Access Requests ──────────────────────────────────────────────────
     async function renderRequests(m) {
       const r = await apiGet('admin_requests');
+      if (r.error) throw new Error(r.error);
       m.innerHTML = `
         <div class="admin-h"><div><h1>Access Requests</h1><p>Approve or deny confidential document requests.</p></div></div>
         <table class="data">
           <thead><tr><th>Requester</th><th>Project</th><th>Category</th><th>Note</th><th>Status</th><th>Date</th><th></th></tr></thead>
-          <tbody>${r.requests.map(x => `
+          <tbody>${(r.requests || []).map(x => `
             <tr>
               <td><b>${escapeHtml(x.email)}</b></td>
               <td>${escapeHtml(x.projectId?.name || '—')}</td>
@@ -323,24 +393,26 @@
                   <button class="btn btn-primary btn-sm" onclick='decide(${JSON.stringify(x._id)}, "approved")'>Approve</button>
                   <button class="btn btn-danger btn-sm" onclick='decide(${JSON.stringify(x._id)}, "denied")'>Deny</button>` : ''}
               </td>
-            </tr>`).join('') || '<tr><td colspan="7" style="text-align:center; color:var(--muted);">No access requests.</td></tr>'}
+            </tr>`).join('') || '<tr><td colspan="7" style="text-align:center; color:var(--muted); padding:32px;">No access requests.</td></tr>'}
           </tbody>
         </table>`;
     }
     async function decide(id, decision) {
-      await apiPost('admin_request_decide', { _id: id, decision });
-      toast('Request ' + decision + '.'); renderRequests(document.getElementById('main'));
+      const r = await apiPost('admin_request_decide', { _id: id, decision });
+      if (r.error) return toast(r.error, 'err');
+      toast('Request ' + decision + '.'); showTab('requests');
     }
     window.decide = decide;
 
-    // ── Audit Log ─────────────────────────────────────────────────────────
+    // ── Audit Log ────────────────────────────────────────────────────────
     async function renderAudit(m) {
       const r = await apiGet('admin_audit');
+      if (r.error) throw new Error(r.error);
       m.innerHTML = `
         <div class="admin-h"><div><h1>Audit Log</h1><p>Last 200 recorded actions.</p></div></div>
         <table class="data">
           <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
-          <tbody>${r.audit.map(a => `
+          <tbody>${(r.audit || []).map(a => `
             <tr>
               <td style="color:var(--muted); font-size:12.5px;">${new Date(a.created_at).toLocaleString()}</td>
               <td><b>${escapeHtml(a.email || '—')}</b></td>
@@ -348,12 +420,12 @@
               <td><code>${escapeHtml(a.action)}</code></td>
               <td style="color:var(--muted); font-size:12px;">${escapeHtml(a.target || '')}</td>
               <td style="color:var(--muted); font-size:12px;">${escapeHtml(a.ip || '—')}</td>
-            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">No activity yet.</td></tr>'}
+            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:32px;">No activity yet.</td></tr>'}
           </tbody>
         </table>`;
     }
 
-    // Modal helpers
+    // ── Modal ────────────────────────────────────────────────────────────
     function openModal(title, bodyHtml, onSave) {
       const box = document.getElementById('modalBox');
       box.innerHTML = `
