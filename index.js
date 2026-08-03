@@ -21,6 +21,7 @@ app.get('/project/:id',   send('project.html'));
 app.get('/about',         send('about.html'));
 app.get('/contact',       send('contact.html'));
 app.get('/login',         send('login.html'));
+app.get('/admin',         send('admin.html'));
 
 app.use(express.static(path.join(__dirname, 'public')));
 

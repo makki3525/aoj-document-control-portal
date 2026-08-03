@@ -13,19 +13,23 @@
   <section class="section">
     <div class="section-head">
       <div>
+        <div class="section-eyebrow">Portfolio</div>
         <h2>All Projects</h2>
-        <p>Filter by status or location. Click any card to open its documents.</p>
+        <p>Filter by status or search by name and location.</p>
       </div>
       <div class="filter-bar" id="filterBar">
         <button class="chip active" data-f="all">All</button>
         <button class="chip" data-f="ongoing">Ongoing</button>
         <button class="chip" data-f="tender">Tender</button>
+        <button class="chip" data-f="completed">Completed</button>
       </div>
     </div>
-    <div style="margin-bottom:22px; max-width:420px;">
+    <div style="margin-bottom:24px; max-width:460px;">
       <input id="q" class="search-input" placeholder="Filter by name or location…" style="padding:12px 18px; font-size:14px;">
     </div>
-    <div class="grid" id="grid"></div>
+    <div class="projects-grid" id="grid">
+      <div class="loading" style="grid-column:1/-1;"><span class="spinner"></span></div>
+    </div>
   </section>
 
   <div id="foot-slot"></div>
@@ -35,18 +39,23 @@
     document.getElementById('foot-slot').innerHTML = renderFooter();
     refreshAuthArea();
 
-    let filter = 'all';
-    const q = document.getElementById('q');
-    const grid = document.getElementById('grid');
+    let all = [], filter = 'all';
+    const grid = document.getElementById('grid'), q = document.getElementById('q');
+
+    (async () => {
+      const r = await apiGet('projects');
+      all = r.projects || [];
+      render();
+    })();
+
     function render() {
       const t = q.value.trim().toLowerCase();
-      const list = PROJECTS.filter(p =>
+      const list = all.filter(p =>
         (filter === 'all' || p.status === filter) &&
-        (!t || p.name.toLowerCase().includes(t) || p.location.toLowerCase().includes(t))
+        (!t || (p.name||'').toLowerCase().includes(t) || (p.location||'').toLowerCase().includes(t))
       );
-      grid.innerHTML = list.length ? list.map(projectCard).join('') : `<div class="empty">No projects match.</div>`;
+      grid.innerHTML = list.length ? list.map(projectCard).join('') : `<div class="empty" style="grid-column:1/-1;">No projects match.</div>`;
     }
-    render();
     q.addEventListener('input', render);
     document.getElementById('filterBar').addEventListener('click', e => {
       const b = e.target.closest('.chip'); if (!b) return;

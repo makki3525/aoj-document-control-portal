@@ -10,18 +10,48 @@
 <body>
   <div id="nav-slot"></div>
 
-  <section class="project-hero" id="phero"></section>
+  <section class="project-hero" id="phero">
+    <div class="ph-inner"><div class="loading"><span class="spinner"></span></div></div>
+  </section>
 
-  <section class="section" style="padding-top:32px;">
-    <div style="margin-bottom:20px; max-width:520px;">
+  <section class="section" style="padding-top:36px;">
+    <div style="margin-bottom:24px; max-width:560px;">
       <div class="search-wrap">
         <span class="search-icon" id="searchIcon"></span>
-        <input id="projSearch" class="search-input" placeholder="Search within this project…" style="padding:14px 18px 14px 48px; font-size:14.5px;">
+        <input id="projSearch" class="search-input" placeholder="Search within this project…"
+               style="padding:14px 18px 14px 48px; font-size:14.5px;">
         <div id="searchResults" class="search-results"></div>
       </div>
     </div>
-    <div id="tabPane"></div>
+    <div id="accordion" class="accordion"></div>
   </section>
+
+  <!-- Access request modal -->
+  <div class="modal-bg" id="reqModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Request access to Confidential documents</h3>
+        <button class="icon-btn" onclick="closeReq()">${''}</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--muted); margin:0 0 16px; font-size:14px;">
+          An administrator will review your request. You'll be notified by email once access is granted.
+        </p>
+        <div class="field">
+          <label>Category</label>
+          <input id="reqCat" disabled>
+        </div>
+        <div class="field">
+          <label>Reason for access (optional)</label>
+          <textarea id="reqNote" placeholder="e.g. Need to review Contract Vol. 2 for VE proposal"></textarea>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" onclick="closeReq()">Cancel</button>
+        <button class="btn btn-primary" id="reqSubmit">Submit Request</button>
+      </div>
+    </div>
+  </div>
 
   <div id="foot-slot"></div>
   <script src="/assets/app.js"></script>
@@ -29,141 +59,135 @@
     document.getElementById('nav-slot').innerHTML = renderNav('projects');
     document.getElementById('foot-slot').innerHTML = renderFooter();
     document.getElementById('searchIcon').innerHTML = ICONS.search;
+    document.querySelector('#reqModal .modal-head .icon-btn').innerHTML = ICONS.x;
     refreshAuthArea();
 
-    const id = location.pathname.split('/').filter(Boolean).pop();
-    const p  = PROJECTS.find(x => x.id === id);
-    if (!p) { document.body.innerHTML = '<div class="empty" style="padding:120px;">Project not found. <a href="/projects">← All projects</a></div>'; }
+    const slug = location.pathname.split('/').filter(Boolean).pop();
+    let project = null, categories = null, me = null;
 
-    const SECTIONS = {
-      confidential: {
-        label: 'Confidential', locked: true,
-        categories: ['Contracts', 'Letters', 'RFIs'],
-      },
-      logs: {
-        label: 'Logs', locked: false,
-        categories: ['Master Log','WIR & MIR Logs','Request to Start Work Log','Letters Log','Request for Information Log','RTS Log','Other Logs'],
-      },
-      softcopies: {
-        label: 'Soft Copies', locked: false,
-        categories: ['Tender Drawings','BOQ','IFC Drawings','Shop Drawings','Method Statements','Pre Qualification Documents','Material Submittals','Sample Submittals','WIR','MIR','NCR','Other Non Confidential Documents'],
-      },
-    };
+    (async () => {
+      me = await apiGet('me');
+      const r = await apiGet('project', { slug });
+      if (r.error) {
+        document.body.innerHTML = `<div class="empty" style="padding:120px;">
+          <h3>Project not found</h3><p><a href="/projects">← Back to projects</a></p></div>`;
+        return;
+      }
+      project = r.project; categories = r.categories;
+      renderHero();
+      renderAccordion();
+    })();
 
-    // Hero
-    document.getElementById('phero').innerHTML = `
-      <div class="ph-inner">
-        <div class="crumbs"><a href="/">Home</a> · <a href="/projects">Projects</a> · <span>${p.name}</span></div>
-        <div class="ph-title-row">
-          <div>
-            <h1>${p.name}</h1>
-            <div class="card-loc" style="margin-top:8px;">${ICONS.location} ${p.location}</div>
+    function renderHero() {
+      const p = project;
+      document.getElementById('phero').innerHTML = `
+        <div class="ph-inner">
+          <div class="crumbs">
+            <a href="/">Home</a><span class="sep">·</span>
+            <a href="/projects">Projects</a><span class="sep">·</span>
+            <span>${escapeHtml(p.name)}</span>
           </div>
-          <span class="card-badge badge-${p.status}" style="position:static;">${p.status}</span>
-        </div>
-        <div class="ph-meta">
-          ${p.reference   ? `<div><b>Reference</b>${p.reference}</div>` : ''}
-          ${p.client      ? `<div><b>Client</b>${p.client}</div>` : ''}
-          ${p.consultant  ? `<div><b>Consultant</b>${p.consultant}</div>` : ''}
-          ${p.engineer    ? `<div><b>Engineer</b>${p.engineer}</div>` : ''}
-          ${p.pmc         ? `<div><b>PMC</b>${p.pmc}</div>` : ''}
-          ${p.developer   ? `<div><b>Developer</b>${p.developer}</div>` : ''}
-          ${p.value       ? `<div><b>Value</b>${p.value}</div>` : ''}
-          ${p.duration    ? `<div><b>Duration</b>${p.duration}</div>` : ''}
-        </div>
-        <div class="tabs" id="tabs">
-          ${Object.entries(SECTIONS).map(([k,s],i) => `
-            <div class="tab ${i===0?'active':''}" data-k="${k}">
-              ${s.locked ? ICONS.lock : ''} ${s.label}
-            </div>`).join('')}
-        </div>
-      </div>`;
-
-    // Tab pane
-    let active = 'confidential';
-    let me = null;
-    (async () => { me = await apiGet('me'); renderTab(); })();
-
-    document.getElementById('tabs').addEventListener('click', e => {
-      const t = e.target.closest('.tab'); if (!t) return;
-      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-      t.classList.add('active');
-      active = t.dataset.k;
-      renderTab();
-    });
-
-    async function renderTab() {
-      const pane = document.getElementById('tabPane');
-      const sec  = SECTIONS[active];
-
-      if (sec.locked && (!me || !me.connected)) {
-        pane.innerHTML = `
-          <div class="file-list">
-            <div class="empty">
-              <div style="font-size:34px; margin-bottom:14px;">🔒</div>
-              <h3 style="margin:0 0 8px;">Confidential documents</h3>
-              <p style="max-width:420px; margin:0 auto 20px;">Sign in with an authorized Google account to view Contracts, Letters and RFIs for this project.</p>
-              <a class="btn btn-primary" href="/api/drive?action=oauth_start">${ICONS.google} Sign in with Google</a>
+          <div class="ph-title-row">
+            <div>
+              ${p.reference ? `<div class="pcard-ref" style="margin-bottom:8px;">${escapeHtml(p.reference)}</div>` : ''}
+              <h1>${escapeHtml(p.name)}</h1>
+              <div class="pcard-loc" style="margin-top:10px;">${ICONS.location} ${escapeHtml(p.location || '')}</div>
             </div>
-          </div>`;
-        return;
-      }
-
-      if (!me || !me.connected) {
-        pane.innerHTML = `
-          <div class="file-list"><div class="empty">
-            <p>Connect your Google Drive to browse documents in this section.</p>
-            <a class="btn btn-primary" href="/api/drive?action=oauth_start" style="margin-top:12px;">${ICONS.google} Connect Drive</a>
-          </div></div>`;
-        return;
-      }
-
-      // For now (no admin link mapping yet), show the categories as browsable buckets
-      // and pull recent matching files from the user's Drive by searching category keywords.
-      pane.innerHTML = `
-        <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">
-          ${sec.categories.map(cat => `
-            <div class="card" style="cursor:default;">
-              <div class="card-body">
-                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                  <div class="sr-icon">${ICONS.folder}</div>
-                  <h3 class="card-title" style="margin:0;">${cat}</h3>
-                </div>
-                <div class="card-desc" id="cat-${slug(cat)}">
-                  <span class="spinner"></span> <span style="margin-left:8px;">Loading…</span>
-                </div>
-                <a class="btn btn-ghost btn-sm" style="justify-content:center;" href="#" onclick="return searchInDrive(event, '${cat.replace(/'/g,"\\'")} ${p.name.split('–')[0].trim().replace(/'/g,"\\'")}')">Search "${cat}" ${ICONS.open}</a>
-              </div>
-            </div>`).join('')}
+            <span class="pcard-badge badge-${p.status}" style="position:static;">${p.status}</span>
+          </div>
+          <div class="ph-meta">
+            ${p.client      ? `<div><b>Client</b><span>${escapeHtml(p.client)}</span></div>` : ''}
+            ${p.consultant  ? `<div><b>Consultant</b><span>${escapeHtml(p.consultant)}</span></div>` : ''}
+            ${p.engineer    ? `<div><b>Engineer</b><span>${escapeHtml(p.engineer)}</span></div>` : ''}
+            ${p.pmc         ? `<div><b>PMC</b><span>${escapeHtml(p.pmc)}</span></div>` : ''}
+            ${p.developer || p.master_developer ? `<div><b>Developer</b><span>${escapeHtml(p.developer || p.master_developer)}</span></div>` : ''}
+            ${p.value       ? `<div><b>Contract Value</b><span>${escapeHtml(p.value)}</span></div>` : ''}
+            ${p.duration    ? `<div><b>Duration</b><span>${escapeHtml(p.duration)}</span></div>` : ''}
+          </div>
         </div>`;
+    }
 
-      // Populate each category with a top-3 preview from the user's Drive
-      sec.categories.forEach(async cat => {
-        const el = document.getElementById('cat-' + slug(cat));
-        const q  = `${cat} ${p.name.split('–')[0].trim()}`;
-        const r  = await apiGet('search', { q });
-        if (!r.items || !r.items.length) {
-          el.innerHTML = `<span style="color:var(--muted); font-size:13px;">No matches yet.</span>`;
-          return;
+    function renderAccordion() {
+      const sections = [
+        { key: 'confidential', icon: ICONS.lockBig, title: 'Confidential Documents',
+          desc: 'Contracts, letters and RFIs — requires authorized Google account.', locked: true },
+        { key: 'logs', icon: ICONS.logs, title: 'Logs',
+          desc: 'Master logs, WIR/MIR, RFI, RTS and correspondence trackers.', locked: false },
+        { key: 'softcopies', icon: ICONS.files, title: 'Soft Copies',
+          desc: 'Tender drawings, BOQ, IFC, shop drawings, submittals and reports.', locked: false },
+      ];
+      document.getElementById('accordion').innerHTML = sections.map((s, i) => {
+        const cats = categories[s.key] || [];
+        return `
+          <details class="acc-item ${s.locked ? 'locked' : ''}" ${i === 0 ? 'open' : ''}>
+            <summary class="acc-head">
+              <div class="acc-icon-wrap">${s.icon}</div>
+              <div class="acc-title">
+                <h3>${escapeHtml(s.title)} ${s.locked ? `<span style="color:var(--brand); display:inline-flex;">${ICONS.lock}</span>` : ''}</h3>
+                <p>${escapeHtml(s.desc)}</p>
+              </div>
+              <div class="acc-count">${cats.length}</div>
+              <div class="acc-caret">${ICONS.chevron}</div>
+            </summary>
+            <div class="acc-body"><div class="acc-body-inner">
+              ${renderCategories(s, cats)}
+            </div></div>
+          </details>`;
+      }).join('');
+    }
+
+    function renderCategories(section, cats) {
+      if (!cats.length) return `<div class="empty" style="padding:24px;"><p>No categories yet — an admin can add them.</p></div>`;
+      const authed = me?.connected;
+      const canOpenConf = me?.role === 'admin' || me?.approved;
+
+      return `<div class="cat-grid">${cats.map(c => {
+        const hasLink = !!c.drive_url;
+        const restricted = section.key === 'confidential' && !canOpenConf;
+
+        if (restricted) {
+          return `<button class="cat-btn locked" onclick="openReq('${c._id}', ${JSON.stringify(c.name).slice(1,-1)}, '${section.key}')">
+            <div class="ico">${ICONS.lock}</div>
+            <div class="body"><b>${escapeHtml(c.name)}</b><small>${authed ? 'Request access' : 'Sign in required'}</small></div>
+            <div class="go">${ICONS.chevron}</div>
+          </button>`;
         }
-        el.innerHTML = r.items.slice(0, 3).map(it => `
-          <a href="${it.link}" target="_blank" rel="noopener" style="display:flex; align-items:center; gap:8px; padding:6px 0; color:var(--text); font-size:13px; border-bottom:1px solid var(--border);">
-            <span style="color:var(--muted);">${it.type === 'folder' ? ICONS.folder : ICONS.file}</span>
-            <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(it.name)}</span>
-          </a>`).join('');
-      });
+        if (!hasLink) {
+          return `<button class="cat-btn unmapped" title="Not yet mapped">
+            <div class="ico">${section.key === 'logs' ? ICONS.sheet : ICONS.folder}</div>
+            <div class="body"><b>${escapeHtml(c.name)}</b><small>Not yet mapped</small></div>
+          </button>`;
+        }
+        return `<a class="cat-btn" href="${escapeHtml(c.drive_url)}" target="_blank" rel="noopener">
+          <div class="ico">${c.drive_type === 'sheet' ? ICONS.sheet : (c.drive_type === 'file' ? ICONS.file : ICONS.folder)}</div>
+          <div class="body"><b>${escapeHtml(c.name)}</b><small>Open in Google Drive</small></div>
+          <div class="go">${ICONS.open}</div>
+        </a>`;
+      }).join('')}</div>`;
     }
 
-    function slug(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
-    function searchInDrive(e, q) {
-      e.preventDefault();
-      document.getElementById('projSearch').value = q;
-      document.getElementById('projSearch').dispatchEvent(new Event('input'));
-      document.getElementById('projSearch').focus();
-      window.scrollTo({ top: document.querySelector('.section').offsetTop - 80, behavior: 'smooth' });
-      return false;
+    // Access request modal
+    let currentReq = null;
+    function openReq(catId, catName, section) {
+      if (!me?.connected) { location.href = API + '?action=oauth_start&return=' + encodeURIComponent(location.pathname); return; }
+      currentReq = { categoryId: catId, section };
+      document.getElementById('reqCat').value = catName;
+      document.getElementById('reqNote').value = '';
+      document.getElementById('reqModal').classList.add('open');
     }
-    window.searchInDrive = searchInDrive;
+    function closeReq() { document.getElementById('reqModal').classList.remove('open'); }
+    window.openReq = openReq; window.closeReq = closeReq;
+    document.getElementById('reqSubmit').addEventListener('click', async () => {
+      if (!currentReq) return;
+      const r = await apiPost('request_access', {
+        projectId: project._id,
+        categoryId: currentReq.categoryId,
+        section: currentReq.section,
+        note: document.getElementById('reqNote').value,
+      });
+      if (r.ok) { toast(r.existing ? 'You already have a pending request for this.' : 'Access request submitted.'); closeReq(); }
+      else toast(r.error || 'Failed', 'err');
+    });
 
     attachSearch(document.getElementById('projSearch'), document.getElementById('searchResults'));
   </script>

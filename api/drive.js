@@ -1,6 +1,6 @@
 'use strict';
-// AOJ Document Control Portal — Google Drive backend.
-// Same shape as driveup.js: one handler, action-based dispatch, Mongo session store.
+// AOJ Document Control Portal — v2 backend.
+// Single-file API handler (Vercel-friendly). Action-based dispatch.
 
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
@@ -9,38 +9,28 @@ const cookie   = require('cookie');
 const jwt      = require('jsonwebtoken');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CONFIG — edit these values directly. No env vars needed.
+// CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
-
-// MongoDB connection string
-const MONGO_URI = 'mongodb+srv://makki3525873_db_user:Karan786youme@makki786.88sw6dj.mongodb.net/aoj_portal?appName=aoj';
-
-// Secret for signing session cookies (change to any long random string)
+const MONGO_URI  = 'mongodb+srv://makki3525873_db_user:Karan786youme@makki786.88sw6dj.mongodb.net/aoj_portal?appName=aoj';
 const JWT_SECRET = 'aoj_jwt_secret_change_me_5f9c1b_a83d4e2f9b7c6d5e';
-
-// AES-256 key (base64, 32 bytes) — used to encrypt Drive refresh tokens
-const ENC_KEY = 'UtAC2SOoMgVup25BMcTOUL2vcVoel74it4prz2oqMzA=';
-
-// Google OAuth credentials (from Google Cloud Console → OAuth 2.0 Client)
+const ENC_KEY    = 'UtAC2SOoMgVup25BMcTOUL2vcVoel74it4prz2oqMzA=';
 const GOOGLE_ID     = '39499304287-l9g5dasjm3r2hrburjnn6ud66qsvv3g0.apps.googleusercontent.com';
 const GOOGLE_SECRET = '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';
 
-// REDIRECT URI is auto-detected from the incoming request (works on localhost,
-// Vercel preview URLs, and your production domain — no config needed).
-// You STILL must register each domain you use under "Authorized redirect URIs"
-// in Google Cloud Console. Add ALL of these that apply:
-//   http://localhost:3000/api/drive?action=oauth_callback
-//   https://<your-project>.vercel.app/api/drive?action=oauth_callback
-//   https://<your-custom-domain>/api/drive?action=oauth_callback
+// First Google account to sign in whose email is in this list becomes the initial admin.
+// Leave empty to auto-promote the very first sign-in as admin.
+const BOOTSTRAP_ADMINS = []; // e.g. ['dc@aoj-sa.com']
+
+// Auto-detect redirect URI from request (works local + Vercel).
+// You must still register each host under Authorized redirect URIs in Google Cloud.
 function getRedirectURI(req) {
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   const proto = req.headers['x-forwarded-proto'] || (host && host.includes('localhost') ? 'http' : 'https');
   return `${proto}://${host}/api/drive?action=oauth_callback`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-const ALGO          = 'aes-256-cbc';
-const COOKIE_NAME   = 'aoj_sid';
+const ALGO        = 'aes-256-cbc';
+const COOKIE_NAME = 'aoj_sid';
 
 // ─── DB ──────────────────────────────────────────────────────────────────────
 let _ready = false;
@@ -51,42 +41,102 @@ async function connectDB() {
 }
 
 const UserSchema = new mongoose.Schema({
-  email:         { type: String, index: true },
+  email:         { type: String, index: true, unique: true },
   name:          String,
   photo:         String,
-  refresh_token: String,   // encrypted
+  role:          { type: String, enum: ['admin','staff','viewer'], default: 'viewer' },
+  approved:      { type: Boolean, default: false },      // for confidential access
+  refresh_token: String,                                 // encrypted
   created_at:    { type: Date, default: Date.now },
   last_login:    { type: Date, default: Date.now },
 });
 const User = mongoose.models.AojUser || mongoose.model('AojUser', UserSchema);
 
+const ProjectSchema = new mongoose.Schema({
+  slug:            { type: String, unique: true, index: true },
+  name:            String,
+  reference:       String,
+  location:        String,
+  status:          { type: String, enum: ['ongoing','tender','completed'], default: 'ongoing' },
+  client:          String,
+  consultant:      String,
+  engineer:        String,
+  pmc:             String,
+  developer:       String,
+  master_developer:String,
+  value:           String,
+  duration:        String,
+  scope:           String,
+  description:     String,
+  cover:           { type: Number, default: 1 },   // 1-4 color variant
+  sort:            { type: Number, default: 0 },
+  active:          { type: Boolean, default: true },
+  drive_root:      String,                          // optional: root Drive folder ID for scoped search
+  created_at:      { type: Date, default: Date.now },
+});
+const Project = mongoose.models.AojProject || mongoose.model('AojProject', ProjectSchema);
+
+const CategorySchema = new mongoose.Schema({
+  projectId:   { type: mongoose.Schema.Types.ObjectId, ref: 'AojProject', index: true },
+  section:     { type: String, enum: ['confidential','logs','softcopies'], index: true },
+  name:        String,
+  drive_url:   String,
+  drive_type:  { type: String, enum: ['folder','file','sheet','doc'], default: 'folder' },
+  sort:        { type: Number, default: 0 },
+  active:      { type: Boolean, default: true },
+  created_at:  { type: Date, default: Date.now },
+});
+const Category = mongoose.models.AojCategory || mongoose.model('AojCategory', CategorySchema);
+
+const AccessRequestSchema = new mongoose.Schema({
+  userId:      { type: mongoose.Schema.Types.ObjectId, ref: 'AojUser' },
+  email:       String,
+  projectId:   { type: mongoose.Schema.Types.ObjectId, ref: 'AojProject' },
+  categoryId:  { type: mongoose.Schema.Types.ObjectId, ref: 'AojCategory' },
+  section:     String,
+  note:        String,
+  status:      { type: String, enum: ['pending','approved','denied'], default: 'pending' },
+  decided_by:  String,
+  decided_at:  Date,
+  created_at:  { type: Date, default: Date.now },
+});
+const AccessRequest = mongoose.models.AojAccessRequest || mongoose.model('AojAccessRequest', AccessRequestSchema);
+
+const AuditLogSchema = new mongoose.Schema({
+  email:       String,
+  role:        String,
+  action:      String,
+  target:      String,
+  meta:        mongoose.Schema.Types.Mixed,
+  ip:          String,
+  ua:          String,
+  created_at:  { type: Date, default: Date.now, index: true },
+});
+const AuditLog = mongoose.models.AojAudit || mongoose.model('AojAudit', AuditLogSchema);
+
 // ─── Crypto ──────────────────────────────────────────────────────────────────
 function encrypt(text) {
   const iv = crypto.randomBytes(16);
   const c  = crypto.createCipheriv(ALGO, Buffer.from(ENC_KEY, 'base64'), iv);
-  const enc = Buffer.concat([c.update(text, 'utf8'), c.final()]);
-  return iv.toString('hex') + ':' + enc.toString('hex');
+  return iv.toString('hex') + ':' + Buffer.concat([c.update(text, 'utf8'), c.final()]).toString('hex');
 }
 function decrypt(text) {
   const [ivHex, encHex] = text.split(':');
-  const iv  = Buffer.from(ivHex, 'hex');
-  const d   = crypto.createDecipheriv(ALGO, Buffer.from(ENC_KEY, 'base64'), iv);
+  const iv = Buffer.from(ivHex, 'hex');
+  const d  = crypto.createDecipheriv(ALGO, Buffer.from(ENC_KEY, 'base64'), iv);
   return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString('utf8');
 }
 
-// ─── Session helpers ─────────────────────────────────────────────────────────
+// ─── Session ─────────────────────────────────────────────────────────────────
 function issueSession(res, userId, req) {
-  const token   = jwt.sign({ uid: String(userId) }, JWT_SECRET, { expiresIn: '30d' });
-  const isHttps = getRedirectURI(req).startsWith('https://');
+  const token = jwt.sign({ uid: String(userId) }, JWT_SECRET, { expiresIn: '30d' });
+  const secure = getRedirectURI(req).startsWith('https://');
   res.setHeader('Set-Cookie', cookie.serialize(COOKIE_NAME, token, {
-    httpOnly: true, sameSite: 'lax', secure: isHttps,
-    path: '/', maxAge: 60 * 60 * 24 * 30,
+    httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: 60 * 60 * 24 * 30,
   }));
 }
 function clearSession(res) {
-  res.setHeader('Set-Cookie', cookie.serialize(COOKIE_NAME, '', {
-    httpOnly: true, path: '/', maxAge: 0,
-  }));
+  res.setHeader('Set-Cookie', cookie.serialize(COOKIE_NAME, '', { httpOnly: true, path: '/', maxAge: 0 }));
 }
 async function getSessionUser(req) {
   const raw = req.headers.cookie ? cookie.parse(req.headers.cookie)[COOKIE_NAME] : null;
@@ -110,6 +160,11 @@ function isInvalidGrant(e) {
   const blob = ((e && e.message) || '') + ' ' + JSON.stringify((e && e.response && e.response.data) || {});
   return /invalid_grant|token has been expired or revoked/i.test(blob);
 }
+function extractDriveId(url) {
+  if (!url) return null;
+  const m = String(url).match(/\/(?:file\/d|folders|d)\/([a-zA-Z0-9_-]{15,})/);
+  return m ? m[1] : null;
+}
 function formatBytes(b) {
   if (!b) return '—';
   const k = 1024, u = ['B','KB','MB','GB','TB'];
@@ -119,24 +174,21 @@ function formatBytes(b) {
 function mapFile(f) {
   const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
   return {
-    id: f.id,
-    name: f.name,
+    id: f.id, name: f.name,
     type: isFolder ? 'folder' : 'file',
     mimeType: f.mimeType,
-    size: f.size ? formatBytes(parseInt(f.size)) : (isFolder ? '' : '—'),
+    size: f.size ? formatBytes(parseInt(f.size)) : (isFolder ? '' : ''),
     modified: f.modifiedTime,
-    icon: f.iconLink,
-    thumb: f.thumbnailLink,
     link: f.webViewLink || (isFolder
       ? `https://drive.google.com/drive/folders/${f.id}`
       : `https://drive.google.com/file/d/${f.id}`),
   };
 }
 
-// ─── CORS / JSON ─────────────────────────────────────────────────────────────
+// ─── HTTP helpers ────────────────────────────────────────────────────────────
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 }
@@ -145,6 +197,70 @@ function json(res, status, obj) {
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(obj));
 }
+async function readBody(req) {
+  if (req.body) return req.body;
+  return await new Promise((resolve) => {
+    let d = '';
+    req.on('data', c => d += c);
+    req.on('end', () => { try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); } });
+  });
+}
+async function audit(req, user, action, target, meta) {
+  try {
+    await AuditLog.create({
+      email: user?.email, role: user?.role, action, target, meta,
+      ip: (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || null,
+      ua: req.headers['user-agent'] || null,
+    });
+  } catch (_) {}
+}
+
+// ─── Seed default projects (idempotent) ──────────────────────────────────────
+const DEFAULT_PROJECTS = [
+  { slug: 'kirby-sudair', name: 'Kirby Factory – Sudair', reference: 'KSA003',
+    location: 'Sudair, Riyadh Province, KSA', status: 'ongoing',
+    client: 'Kirby Contracting Co. SPC LLC', consultant: 'ACEC', master_developer: 'MODON',
+    value: 'SAR 48,022,000', duration: '8 months (from July 2026)',
+    description: 'Civil works for factory building — architectural + structural, masonry, plaster, tiling/flooring/cladding, painting, metal/iron/aluminum works.',
+    cover: 1, sort: 1 },
+  { slug: 'rak-yanbu', name: 'RAK Ceramics Production Factory – Yanbu', reference: 'KSA002',
+    location: 'Yanbu Industrial City, KSA', status: 'ongoing',
+    client: 'RAK Ceramic', pmc: 'Stonehaven', engineer: 'Al Bawardi',
+    value: 'SAR 31,280,000 (incl. VAT)', duration: '9 months',
+    description: 'Civil engineering works for factory building (56,320 m²) and raw materials storage.',
+    cover: 2, sort: 2 },
+  { slug: 'mada-plasterboard-yanbu', name: 'Mada Gypsum – Plaster Board Expansion',
+    location: 'Royal Commission, Yanbu, KSA', status: 'tender',
+    client: 'Mada Gypsum Company Ltd.',
+    description: 'Civil, architectural, MEP, fire protection, landscaping and hangar steel erection works.',
+    cover: 3, sort: 3 },
+  { slug: 'mada-modon-riyadh', name: 'Mada Gypsum – Modon Steel Factory', reference: 'AOJ/Offer/124/R2',
+    location: 'Modon, Riyadh, KSA', status: 'tender',
+    client: 'Mada Gypsum Company Ltd.', consultant: 'Masar Al Enjaz Engineering Consultancy',
+    value: 'SAR 23,222,000 (excl. VAT)', duration: '12 months from IFC Drawings & Building Permit',
+    description: 'Full civil, structural, architectural, electrical, mechanical, fire protection and fire alarm works.',
+    cover: 4, sort: 4 },
+];
+const DEFAULT_CATEGORIES = {
+  confidential: ['Contracts', 'Letters', 'RFIs'],
+  logs:         ['Master Log','WIR & MIR Logs','Request to Start Work Log','Letters Log','Request for Information Log','RTS Log','Other Logs'],
+  softcopies:   ['Tender Drawings','BOQ','IFC Drawings','Shop Drawings','Method Statements','Pre Qualification Documents','Material Submittals','Sample Submittals','WIR','MIR','NCR','Other Non Confidential Documents'],
+};
+let _seeded = false;
+async function seedIfEmpty() {
+  if (_seeded) return; _seeded = true;
+  const n = await Project.countDocuments();
+  if (n > 0) return;
+  for (const p of DEFAULT_PROJECTS) {
+    const proj = await Project.create(p);
+    for (const [section, cats] of Object.entries(DEFAULT_CATEGORIES)) {
+      await Category.insertMany(cats.map((name, i) => ({
+        projectId: proj._id, section, name, sort: i,
+      })));
+    }
+  }
+  console.log('[seed] created default projects and categories');
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 module.exports = async (req, res) => {
@@ -152,43 +268,42 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.end();
 
   const url    = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const action = url.searchParams.get('action') || (req.body && req.body.action) || '';
+  let   action = url.searchParams.get('action') || '';
+  let   body   = null;
+  if (req.method !== 'GET') { body = await readBody(req); action = action || body.action || ''; }
 
-  try { await connectDB(); }
-  catch (e) { return json(res, 503, { error: 'Database unavailable' }); }
+  try { await connectDB(); await seedIfEmpty(); }
+  catch (e) { console.error('[db]', e.message); return json(res, 503, { error: 'Database unavailable' }); }
 
-  // ── OAuth start ────────────────────────────────────────────────────────────
-  if (req.method === 'GET' && action === 'oauth_start') {
-    const auth = oauthClient(req);
-    const authUrl = auth.generateAuthUrl({
-      access_type: 'offline',
-      prompt: 'consent',
-      scope: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/userinfo.email',
-        'https://www.googleapis.com/auth/userinfo.profile',
-      ],
-    });
-    res.statusCode = 302;
-    res.setHeader('Location', authUrl);
-    return res.end();
-  }
+  try {
+    // ────────────────────────────────────────────────────────────────────────
+    // AUTH
+    // ────────────────────────────────────────────────────────────────────────
+    if (action === 'oauth_start' && req.method === 'GET') {
+      const auth = oauthClient(req);
+      const authUrl = auth.generateAuthUrl({
+        access_type: 'offline', prompt: 'consent',
+        scope: [
+          'https://www.googleapis.com/auth/drive.readonly',
+          'https://www.googleapis.com/auth/userinfo.email',
+          'https://www.googleapis.com/auth/userinfo.profile',
+        ],
+        state: url.searchParams.get('return') || '/',
+      });
+      res.statusCode = 302; res.setHeader('Location', authUrl); return res.end();
+    }
 
-  // ── OAuth callback ─────────────────────────────────────────────────────────
-  if (req.method === 'GET' && action === 'oauth_callback') {
-    const code = url.searchParams.get('code');
-    const err  = url.searchParams.get('error');
-    if (err)  { res.statusCode = 302; res.setHeader('Location', '/?err=' + encodeURIComponent(err)); return res.end(); }
-    if (!code) return json(res, 400, { error: 'Missing code' });
+    if (action === 'oauth_callback' && req.method === 'GET') {
+      const code = url.searchParams.get('code');
+      const err  = url.searchParams.get('error');
+      const state = url.searchParams.get('state') || '/';
+      if (err)  { res.statusCode = 302; res.setHeader('Location', '/?err=' + encodeURIComponent(err)); return res.end(); }
+      if (!code) return json(res, 400, { error: 'Missing code' });
 
-    try {
       const auth = oauthClient(req);
       const { tokens } = await auth.getToken(code);
       auth.setCredentials(tokens);
-
-      // fetch profile
-      const oauth2 = google.oauth2({ version: 'v2', auth });
-      const me = (await oauth2.userinfo.get()).data;
+      const me = (await google.oauth2({ version: 'v2', auth }).userinfo.get()).data;
 
       let user = await User.findOne({ email: me.email });
       if (!user) user = new User({ email: me.email });
@@ -196,139 +311,247 @@ module.exports = async (req, res) => {
       user.photo = me.picture || user.photo;
       user.last_login = new Date();
       if (tokens.refresh_token) user.refresh_token = encrypt(tokens.refresh_token);
-      else if (!user.refresh_token) {
-        return json(res, 400, { error: 'No refresh token. Revoke access at myaccount.google.com/permissions and try again.' });
+
+      // Bootstrap first admin
+      const anyAdmin = await User.exists({ role: 'admin' });
+      if (!anyAdmin) {
+        if (!BOOTSTRAP_ADMINS.length || BOOTSTRAP_ADMINS.includes(me.email)) {
+          user.role = 'admin'; user.approved = true;
+        }
+      } else if (BOOTSTRAP_ADMINS.includes(me.email) && user.role !== 'admin') {
+        user.role = 'admin'; user.approved = true;
       }
       await user.save();
-
       issueSession(res, user._id, req);
-      res.statusCode = 302;
-      res.setHeader('Location', '/?connected=1');
-      return res.end();
-    } catch (e) {
-      console.error('[oauth_callback]', e.message);
-      res.statusCode = 302;
-      res.setHeader('Location', '/?err=' + encodeURIComponent(e.message));
-      return res.end();
+      await audit(req, user, 'login', 'auth', {});
+      res.statusCode = 302; res.setHeader('Location', state.startsWith('/') ? state : '/'); return res.end();
     }
-  }
 
-  // ── Who am I ───────────────────────────────────────────────────────────────
-  if (req.method === 'GET' && action === 'me') {
-    const user = await getSessionUser(req);
-    if (!user) return json(res, 200, { connected: false });
-    return json(res, 200, {
-      connected: true,
-      email: user.email, name: user.name, photo: user.photo,
-    });
-  }
-
-  // ── Logout ─────────────────────────────────────────────────────────────────
-  if ((req.method === 'GET' || req.method === 'POST') && action === 'logout') {
-    clearSession(res);
-    return json(res, 200, { ok: true });
-  }
-
-  // ── Everything below requires a session ────────────────────────────────────
-  const user = await getSessionUser(req);
-  if (!user || !user.refresh_token) return json(res, 401, { error: 'Not connected' });
-
-  const drive = getDrive(user, req);
-
-  try {
-    // ── List a folder (default: My Drive root) ───────────────────────────────
-    if (req.method === 'GET' && action === 'list') {
-      const folderId = url.searchParams.get('folder') || 'root';
-      const pageToken = url.searchParams.get('pageToken') || undefined;
-
-      const meta = folderId === 'root'
-        ? { id: 'root', name: 'My Drive', link: 'https://drive.google.com/drive/my-drive' }
-        : (await drive.files.get({
-            fileId: folderId,
-            fields: 'id,name,mimeType,webViewLink,parents',
-            supportsAllDrives: true,
-          })).data;
-
-      const list = await drive.files.list({
-        q: `'${folderId}' in parents and trashed = false`,
-        fields: 'nextPageToken, files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink)',
-        pageSize: 100,
-        orderBy: 'folder,name',
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-        pageToken,
-      });
-
+    if (action === 'me' && req.method === 'GET') {
+      const user = await getSessionUser(req);
+      if (!user) return json(res, 200, { connected: false });
       return json(res, 200, {
-        folder: { id: meta.id, name: meta.name, link: meta.webViewLink || null, parents: meta.parents || [] },
-        items: list.data.files.map(mapFile),
-        nextPageToken: list.data.nextPageToken || null,
+        connected: true, email: user.email, name: user.name, photo: user.photo,
+        role: user.role, approved: user.approved,
       });
     }
 
-    // ── Search across Drive ──────────────────────────────────────────────────
-    if (req.method === 'GET' && action === 'search') {
-      const q     = (url.searchParams.get('q') || '').trim();
-      const scope = url.searchParams.get('scope') || null; // optional folder id to scope search under
+    if (action === 'logout') {
+      clearSession(res);
+      return json(res, 200, { ok: true });
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // PUBLIC: projects + project detail
+    // ────────────────────────────────────────────────────────────────────────
+    if (action === 'projects' && req.method === 'GET') {
+      const list = await Project.find({ active: true }).sort({ sort: 1, name: 1 }).lean();
+      return json(res, 200, { projects: list });
+    }
+
+    if (action === 'project' && req.method === 'GET') {
+      const slug = url.searchParams.get('slug');
+      if (!slug) return json(res, 400, { error: 'slug required' });
+      const project = await Project.findOne({ slug, active: true }).lean();
+      if (!project) return json(res, 404, { error: 'Not found' });
+      const cats = await Category.find({ projectId: project._id, active: true }).sort({ sort: 1 }).lean();
+      const grouped = { confidential: [], logs: [], softcopies: [] };
+      for (const c of cats) if (grouped[c.section]) grouped[c.section].push(c);
+      return json(res, 200, { project, categories: grouped });
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // SEARCH — uses the session user's Drive; confidential items marked restricted
+    // ────────────────────────────────────────────────────────────────────────
+    if (action === 'search' && req.method === 'GET') {
+      const q = (url.searchParams.get('q') || '').trim();
       if (!q) return json(res, 200, { items: [], q });
+      const user = await getSessionUser(req);
+      if (!user || !user.refresh_token) return json(res, 401, { error: 'Not connected', items: [] });
 
-      // escape single quotes in the query
+      const drive = getDrive(user, req);
       const safe = q.replace(/'/g, "\\'");
-      let query = `(name contains '${safe}' or fullText contains '${safe}') and trashed = false`;
-      if (scope) query += ` and '${scope}' in parents`;
-
+      const query = `(name contains '${safe}' or fullText contains '${safe}') and trashed = false`;
       const list = await drive.files.list({
         q: query,
-        fields: 'files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink,thumbnailLink,parents)',
-        pageSize: 50,
-        orderBy: 'modifiedTime desc',
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
+        fields: 'files(id,name,mimeType,size,modifiedTime,webViewLink,parents)',
+        pageSize: 40, orderBy: 'modifiedTime desc',
+        supportsAllDrives: true, includeItemsFromAllDrives: true,
       });
 
-      // resolve parent folder names for context
+      // Load categories to know which drive IDs are confidential
+      const cats = await Category.find({ drive_url: { $ne: null } }).lean();
+      const confidentialIds = new Set(cats.filter(c => c.section === 'confidential').map(c => extractDriveId(c.drive_url)).filter(Boolean));
+
+      // Parent folder names for context
       const parentIds = [...new Set(list.data.files.flatMap(f => f.parents || []))].slice(0, 30);
       const parentMap = {};
       await Promise.all(parentIds.map(async pid => {
-        try {
-          const m = await drive.files.get({ fileId: pid, fields: 'id,name', supportsAllDrives: true });
-          parentMap[pid] = m.data.name;
-        } catch (_) {}
+        try { const m = await drive.files.get({ fileId: pid, fields: 'id,name', supportsAllDrives: true }); parentMap[pid] = m.data.name; }
+        catch (_) {}
       }));
 
-      const items = list.data.files.map(f => ({
-        ...mapFile(f),
-        folder: (f.parents && parentMap[f.parents[0]]) || null,
-      }));
+      const items = list.data.files.map(f => {
+        const inConfidential = (f.parents || []).some(p => confidentialIds.has(p));
+        const restricted = inConfidential && !user.approved && user.role !== 'admin';
+        return {
+          ...mapFile(f),
+          folder: (f.parents && parentMap[f.parents[0]]) || null,
+          restricted,
+          link: restricted ? null : (f.webViewLink || null),
+        };
+      });
       return json(res, 200, { q, count: items.length, items });
     }
 
-    // ── Storage / account info ───────────────────────────────────────────────
-    if (req.method === 'GET' && action === 'account') {
-      const a = await drive.about.get({
-        fields: 'user(emailAddress,displayName,photoLink), storageQuota(limit,usage)',
+    // ────────────────────────────────────────────────────────────────────────
+    // ACCESS REQUESTS (confidential)
+    // ────────────────────────────────────────────────────────────────────────
+    if (action === 'request_access' && req.method === 'POST') {
+      const user = await getSessionUser(req);
+      if (!user) return json(res, 401, { error: 'Sign in first' });
+      const { projectId, categoryId, section, note } = body || {};
+      if (!projectId) return json(res, 400, { error: 'projectId required' });
+      const existing = await AccessRequest.findOne({
+        userId: user._id, projectId, categoryId: categoryId || null, status: 'pending',
       });
-      const q = a.data.storageQuota || {};
-      return json(res, 200, {
-        email: a.data.user.emailAddress,
-        name:  a.data.user.displayName,
-        photo: a.data.user.photoLink,
-        storage: {
-          limit: q.limit ? formatBytes(parseInt(q.limit)) : 'Unlimited',
-          used:  formatBytes(parseInt(q.usage || 0)),
-        },
+      if (existing) return json(res, 200, { ok: true, existing: true });
+      await AccessRequest.create({
+        userId: user._id, email: user.email, projectId, categoryId: categoryId || null,
+        section: section || 'confidential', note: (note || '').slice(0, 500),
       });
+      await audit(req, user, 'access_request', projectId, { categoryId, section });
+      return json(res, 200, { ok: true });
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // ADMIN — everything below requires role=admin
+    // ────────────────────────────────────────────────────────────────────────
+    const guard = async () => {
+      const u = await getSessionUser(req);
+      if (!u || u.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return null; }
+      return u;
+    };
+
+    if (action === 'admin_stats' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const [projects, categories, users, pending, audit24] = await Promise.all([
+        Project.countDocuments({ active: true }),
+        Category.countDocuments({ active: true }),
+        User.countDocuments({}),
+        AccessRequest.countDocuments({ status: 'pending' }),
+        AuditLog.countDocuments({ created_at: { $gte: new Date(Date.now() - 86400000) } }),
+      ]);
+      return json(res, 200, { projects, categories, users, pending_requests: pending, actions_24h: audit24 });
+    }
+
+    // Projects CRUD
+    if (action === 'admin_projects' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const list = await Project.find({}).sort({ sort: 1 }).lean();
+      return json(res, 200, { projects: list });
+    }
+    if (action === 'admin_project_save' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const { _id, ...data } = body;
+      if (!data.slug || !data.name) return json(res, 400, { error: 'slug and name required' });
+      let saved;
+      if (_id) { saved = await Project.findByIdAndUpdate(_id, data, { new: true }); }
+      else     { saved = await Project.create(data); }
+      // Auto-create default categories on new project
+      if (!_id) {
+        for (const [section, cats] of Object.entries(DEFAULT_CATEGORIES)) {
+          await Category.insertMany(cats.map((name, i) => ({ projectId: saved._id, section, name, sort: i })));
+        }
+      }
+      await audit(req, u, _id ? 'project_update' : 'project_create', String(saved._id), data);
+      return json(res, 200, { project: saved });
+    }
+    if (action === 'admin_project_delete' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const { _id } = body;
+      await Project.findByIdAndUpdate(_id, { active: false });
+      await audit(req, u, 'project_delete', _id, {});
+      return json(res, 200, { ok: true });
+    }
+
+    // Categories CRUD
+    if (action === 'admin_categories' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const projectId = url.searchParams.get('projectId');
+      const q = projectId ? { projectId } : {};
+      const list = await Category.find(q).sort({ section: 1, sort: 1 }).lean();
+      return json(res, 200, { categories: list });
+    }
+    if (action === 'admin_category_save' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const { _id, ...data } = body;
+      let saved;
+      if (_id) saved = await Category.findByIdAndUpdate(_id, data, { new: true });
+      else     saved = await Category.create(data);
+      await audit(req, u, _id ? 'category_update' : 'category_create', String(saved._id), data);
+      return json(res, 200, { category: saved });
+    }
+    if (action === 'admin_category_delete' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      await Category.findByIdAndUpdate(body._id, { active: false });
+      await audit(req, u, 'category_delete', body._id, {});
+      return json(res, 200, { ok: true });
+    }
+
+    // Users
+    if (action === 'admin_users' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const list = await User.find({}).select('-refresh_token').sort({ last_login: -1 }).lean();
+      return json(res, 200, { users: list });
+    }
+    if (action === 'admin_user_update' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const { _id, role, approved } = body;
+      const patch = {};
+      if (role !== undefined) patch.role = role;
+      if (approved !== undefined) patch.approved = !!approved;
+      const saved = await User.findByIdAndUpdate(_id, patch, { new: true }).select('-refresh_token');
+      await audit(req, u, 'user_update', _id, patch);
+      return json(res, 200, { user: saved });
+    }
+
+    // Access requests
+    if (action === 'admin_requests' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const list = await AccessRequest.find({}).sort({ created_at: -1 }).limit(200)
+        .populate('projectId', 'name slug').populate('categoryId', 'name section').lean();
+      return json(res, 200, { requests: list });
+    }
+    if (action === 'admin_request_decide' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const { _id, decision } = body; // 'approved' | 'denied'
+      const r = await AccessRequest.findByIdAndUpdate(_id, {
+        status: decision, decided_by: u.email, decided_at: new Date(),
+      }, { new: true });
+      if (decision === 'approved' && r?.userId) {
+        await User.findByIdAndUpdate(r.userId, { approved: true });
+      }
+      await audit(req, u, 'request_' + decision, _id, {});
+      return json(res, 200, { request: r });
+    }
+
+    // Audit log
+    if (action === 'admin_audit' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const list = await AuditLog.find({}).sort({ created_at: -1 }).limit(200).lean();
+      return json(res, 200, { audit: list });
     }
 
     return json(res, 400, { error: 'Unknown action: ' + action });
   } catch (e) {
     if (isInvalidGrant(e)) {
-      user.refresh_token = undefined;
-      await user.save();
+      const user = await getSessionUser(req);
+      if (user) { user.refresh_token = undefined; await user.save(); }
       clearSession(res);
       return json(res, 401, { error: 'Google access revoked. Please reconnect.', revoked: true });
     }
-    console.error('[drive api]', action, e.message);
+    console.error('[api]', action, e.message);
     return json(res, 500, { error: e.message });
   }
 };

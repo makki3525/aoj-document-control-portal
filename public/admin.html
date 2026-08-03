@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin — AOJ Document Control Portal</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <div class="admin-layout">
+    <aside class="admin-side">
+      <h4>Manage</h4>
+      <div class="admin-nav">
+        <a data-tab="dash" class="active">📊 Dashboard</a>
+        <a data-tab="projects">🏗 Projects</a>
+        <a data-tab="categories">📁 Categories</a>
+        <a data-tab="users">👥 Users</a>
+        <a data-tab="requests">🔑 Access Requests</a>
+        <a data-tab="audit">📜 Audit Log</a>
+      </div>
+      <h4>Portal</h4>
+      <div class="admin-nav">
+        <a href="/">← Back to portal</a>
+      </div>
+    </aside>
+
+    <main class="admin-main" id="main">
+      <div class="loading"><span class="spinner"></span></div>
+    </main>
+  </div>
+
+  <div class="modal-bg" id="modal">
+    <div class="modal" id="modalBox"></div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('');
+    refreshAuthArea();
+
+    let projectsCache = [];
+
+    // Guard: must be admin
+    (async () => {
+      const me = await apiGet('me');
+      if (!me.connected || me.role !== 'admin') {
+        document.getElementById('main').innerHTML = `
+          <div class="empty" style="padding:80px;">
+            <div style="font-size:38px; margin-bottom:14px;">🔒</div>
+            <h3>Admin access required</h3>
+            <p>Sign in with an admin Google account.</p>
+            <a class="btn btn-primary" href="${API}?action=oauth_start&return=/admin" style="margin-top:16px;">${ICONS.google} Sign in</a>
+          </div>`;
+        return;
+      }
+      showTab('dash');
+    })();
+
+    document.querySelectorAll('.admin-nav a[data-tab]').forEach(a => {
+      a.addEventListener('click', () => {
+        document.querySelectorAll('.admin-nav a').forEach(x => x.classList.remove('active'));
+        a.classList.add('active');
+        showTab(a.dataset.tab);
+      });
+    });
+
+    async function showTab(tab) {
+      const m = document.getElementById('main');
+      m.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
+      if (tab === 'dash')       return renderDash(m);
+      if (tab === 'projects')   return renderProjects(m);
+      if (tab === 'categories') return renderCategories(m);
+      if (tab === 'users')      return renderUsers(m);
+      if (tab === 'requests')   return renderRequests(m);
+      if (tab === 'audit')      return renderAudit(m);
+    }
+
+    // ── Dashboard ─────────────────────────────────────────────────────────
+    async function renderDash(m) {
+      const s = await apiGet('admin_stats');
+      m.innerHTML = `
+        <div class="admin-h"><div>
+          <h1>Dashboard</h1>
+          <p>Overview of your Document Control Portal.</p>
+        </div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="l">Active Projects</div><div class="v">${s.projects || 0}</div></div>
+          <div class="kpi"><div class="l">Categories Mapped</div><div class="v">${s.categories || 0}</div></div>
+          <div class="kpi"><div class="l">Registered Users</div><div class="v">${s.users || 0}</div></div>
+          <div class="kpi"><div class="l">Pending Requests</div><div class="v" style="color:var(--brand);">${s.pending_requests || 0}</div></div>
+          <div class="kpi"><div class="l">Actions (24h)</div><div class="v">${s.actions_24h || 0}</div></div>
+        </div>
+        <div style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px;">
+          <h3 style="margin-top:0;">Quick actions</h3>
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="editProject()">+ New Project</button>
+            <button class="btn btn-ghost" onclick="document.querySelector('[data-tab=categories]').click()">Map Drive Links</button>
+            <button class="btn btn-ghost" onclick="document.querySelector('[data-tab=requests]').click()">Review Requests</button>
+          </div>
+        </div>`;
+    }
+
+    // ── Projects ──────────────────────────────────────────────────────────
+    async function renderProjects(m) {
+      const r = await apiGet('admin_projects');
+      projectsCache = r.projects || [];
+      m.innerHTML = `
+        <div class="admin-h">
+          <div><h1>Projects</h1><p>Add, edit, or archive projects.</p></div>
+          <button class="btn btn-primary" onclick="editProject()">+ New Project</button>
+        </div>
+        <table class="data">
+          <thead><tr><th>Name</th><th>Reference</th><th>Location</th><th>Status</th><th>Active</th><th></th></tr></thead>
+          <tbody>${r.projects.map(p => `
+            <tr>
+              <td><b>${escapeHtml(p.name)}</b></td>
+              <td>${escapeHtml(p.reference || '—')}</td>
+              <td>${escapeHtml(p.location || '—')}</td>
+              <td><span class="pcard-badge badge-${p.status}" style="position:static;">${p.status}</span></td>
+              <td>${p.active ? '✓' : '—'}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="btn btn-ghost btn-sm" onclick='editProject(${JSON.stringify(p._id)})'>Edit</button>
+                <button class="btn btn-danger btn-sm" onclick='delProject(${JSON.stringify(p._id)})'>Archive</button>
+              </td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    }
+    async function editProject(id) {
+      let p = { name:'', slug:'', reference:'', location:'', status:'ongoing', client:'', consultant:'', engineer:'', pmc:'', developer:'', value:'', duration:'', description:'', cover:1, drive_root:'', sort:0 };
+      if (id) {
+        const r = await apiGet('admin_projects');
+        p = r.projects.find(x => x._id === id) || p;
+      }
+      openModal(id ? 'Edit Project' : 'New Project', `
+        <div class="field-row">
+          <div class="field"><label>Slug (URL)</label><input id="f-slug" value="${escapeHtml(p.slug||'')}" ${id?'disabled':''} placeholder="my-project"></div>
+          <div class="field"><label>Reference</label><input id="f-reference" value="${escapeHtml(p.reference||'')}"></div>
+        </div>
+        <div class="field"><label>Project Name *</label><input id="f-name" value="${escapeHtml(p.name||'')}"></div>
+        <div class="field"><label>Location</label><input id="f-location" value="${escapeHtml(p.location||'')}"></div>
+        <div class="field-row">
+          <div class="field"><label>Status</label><select id="f-status">
+            <option value="ongoing"${p.status==='ongoing'?' selected':''}>Ongoing</option>
+            <option value="tender"${p.status==='tender'?' selected':''}>Tender</option>
+            <option value="completed"${p.status==='completed'?' selected':''}>Completed</option>
+          </select></div>
+          <div class="field"><label>Cover (1–4)</label><input id="f-cover" type="number" min="1" max="4" value="${p.cover||1}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Client</label><input id="f-client" value="${escapeHtml(p.client||'')}"></div>
+          <div class="field"><label>Consultant</label><input id="f-consultant" value="${escapeHtml(p.consultant||'')}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Engineer</label><input id="f-engineer" value="${escapeHtml(p.engineer||'')}"></div>
+          <div class="field"><label>PMC</label><input id="f-pmc" value="${escapeHtml(p.pmc||'')}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Value</label><input id="f-value" value="${escapeHtml(p.value||'')}"></div>
+          <div class="field"><label>Duration</label><input id="f-duration" value="${escapeHtml(p.duration||'')}"></div>
+        </div>
+        <div class="field"><label>Description</label><textarea id="f-description">${escapeHtml(p.description||'')}</textarea></div>
+        <div class="field"><label>Drive Root Folder URL (optional)</label><input id="f-drive_root" value="${escapeHtml(p.drive_root||'')}" placeholder="https://drive.google.com/drive/folders/..."></div>
+      `, async () => {
+        const data = {};
+        ['slug','reference','name','location','status','client','consultant','engineer','pmc','developer','value','duration','description','drive_root'].forEach(k => { const el = document.getElementById('f-'+k); data[k] = el.disabled ? p[k] : el.value.trim(); });
+        data.cover = parseInt(document.getElementById('f-cover').value) || 1;
+        if (id) data._id = id;
+        const r = await apiPost('admin_project_save', data);
+        if (r.error) return toast(r.error, 'err');
+        toast('Saved.'); closeModal(); renderProjects(document.getElementById('main'));
+      });
+    }
+    async function delProject(id) {
+      if (!confirm('Archive this project?')) return;
+      await apiPost('admin_project_delete', { _id: id });
+      toast('Archived.'); renderProjects(document.getElementById('main'));
+    }
+    window.editProject = editProject; window.delProject = delProject;
+
+    // ── Categories ────────────────────────────────────────────────────────
+    async function renderCategories(m) {
+      if (!projectsCache.length) { const r = await apiGet('admin_projects'); projectsCache = r.projects; }
+      const pid = localStorage.getItem('adm-pid') || (projectsCache[0]?._id);
+      const r = await apiGet('admin_categories', pid ? { projectId: pid } : {});
+      const groups = { confidential: [], logs: [], softcopies: [] };
+      r.categories.forEach(c => { if (groups[c.section]) groups[c.section].push(c); });
+      m.innerHTML = `
+        <div class="admin-h">
+          <div><h1>Categories &amp; Drive Links</h1><p>Map each category button to a Google Drive folder, file, or Sheet URL.</p></div>
+          <div style="display:flex; gap:10px;">
+            <select id="pickProj" style="padding:10px 14px; border-radius:9px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+              ${projectsCache.map(p => `<option value="${p._id}"${p._id===pid?' selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+            <button class="btn btn-primary" onclick="editCat()">+ Add Category</button>
+          </div>
+        </div>
+        ${['confidential','logs','softcopies'].map(sec => `
+          <h3 style="margin:24px 0 12px; font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);">${sec}</h3>
+          <table class="data">
+            <thead><tr><th>Name</th><th>Type</th><th>Drive URL</th><th></th></tr></thead>
+            <tbody>${groups[sec].map(c => `
+              <tr>
+                <td><b>${escapeHtml(c.name)}</b></td>
+                <td>${c.drive_type || 'folder'}</td>
+                <td style="max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                  ${c.drive_url ? `<a href="${escapeHtml(c.drive_url)}" target="_blank" style="color:var(--brand);">${escapeHtml(c.drive_url)}</a>` : '<span style="color:var(--muted);">not mapped</span>'}
+                </td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="btn btn-ghost btn-sm" onclick='editCat(${JSON.stringify(c._id)})'>Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick='delCat(${JSON.stringify(c._id)})'>Remove</button>
+                </td>
+              </tr>`).join('') || '<tr><td colspan="4" style="text-align:center; color:var(--muted);">No categories yet.</td></tr>'}
+            </tbody>
+          </table>`).join('')}`;
+      document.getElementById('pickProj').addEventListener('change', e => {
+        localStorage.setItem('adm-pid', e.target.value);
+        renderCategories(document.getElementById('main'));
+      });
+    }
+    async function editCat(id) {
+      const pid = localStorage.getItem('adm-pid') || projectsCache[0]?._id;
+      let c = { projectId: pid, section: 'softcopies', name: '', drive_url: '', drive_type: 'folder', sort: 0 };
+      if (id) {
+        const r = await apiGet('admin_categories', { projectId: pid });
+        c = r.categories.find(x => x._id === id) || c;
+      }
+      openModal(id ? 'Edit Category' : 'New Category', `
+        <div class="field"><label>Name *</label><input id="c-name" value="${escapeHtml(c.name||'')}"></div>
+        <div class="field-row">
+          <div class="field"><label>Section</label><select id="c-section">
+            <option value="confidential"${c.section==='confidential'?' selected':''}>Confidential</option>
+            <option value="logs"${c.section==='logs'?' selected':''}>Logs</option>
+            <option value="softcopies"${c.section==='softcopies'?' selected':''}>Soft Copies</option>
+          </select></div>
+          <div class="field"><label>Type</label><select id="c-type">
+            <option value="folder"${c.drive_type==='folder'?' selected':''}>Folder</option>
+            <option value="file"${c.drive_type==='file'?' selected':''}>File</option>
+            <option value="sheet"${c.drive_type==='sheet'?' selected':''}>Sheet</option>
+            <option value="doc"${c.drive_type==='doc'?' selected':''}>Doc</option>
+          </select></div>
+        </div>
+        <div class="field"><label>Drive URL</label><input id="c-url" value="${escapeHtml(c.drive_url||'')}" placeholder="https://drive.google.com/..."></div>
+        <div class="field"><label>Sort order</label><input id="c-sort" type="number" value="${c.sort||0}"></div>
+      `, async () => {
+        const data = {
+          projectId: pid,
+          name: document.getElementById('c-name').value.trim(),
+          section: document.getElementById('c-section').value,
+          drive_type: document.getElementById('c-type').value,
+          drive_url: document.getElementById('c-url').value.trim(),
+          sort: parseInt(document.getElementById('c-sort').value) || 0,
+        };
+        if (id) data._id = id;
+        const r = await apiPost('admin_category_save', data);
+        if (r.error) return toast(r.error, 'err');
+        toast('Saved.'); closeModal(); renderCategories(document.getElementById('main'));
+      });
+    }
+    async function delCat(id) {
+      if (!confirm('Remove this category?')) return;
+      await apiPost('admin_category_delete', { _id: id });
+      toast('Removed.'); renderCategories(document.getElementById('main'));
+    }
+    window.editCat = editCat; window.delCat = delCat;
+
+    // ── Users ─────────────────────────────────────────────────────────────
+    async function renderUsers(m) {
+      const r = await apiGet('admin_users');
+      m.innerHTML = `
+        <div class="admin-h"><div><h1>Users</h1><p>Assign roles and approve confidential access.</p></div></div>
+        <table class="data">
+          <thead><tr><th>User</th><th>Role</th><th>Confidential Access</th><th>Last Login</th><th></th></tr></thead>
+          <tbody>${r.users.map(u => `
+            <tr>
+              <td>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  ${u.photo ? `<img src="${u.photo}" referrerpolicy="no-referrer" style="width:32px; height:32px; border-radius:50%;">` : '<div class="sr-icon" style="width:32px; height:32px;">👤</div>'}
+                  <div><b>${escapeHtml(u.name || u.email)}</b><br><small style="color:var(--muted);">${escapeHtml(u.email)}</small></div>
+                </div>
+              </td>
+              <td>
+                <select onchange='updUser(${JSON.stringify(u._id)}, {role: this.value})' style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+                  <option value="viewer"${u.role==='viewer'?' selected':''}>Viewer</option>
+                  <option value="staff"${u.role==='staff'?' selected':''}>Staff</option>
+                  <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
+                </select>
+              </td>
+              <td>
+                <span class="tag st-${u.approved?'approved':'pending'}">${u.approved?'Approved':'Not approved'}</span>
+                <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick='updUser(${JSON.stringify(u._id)}, {approved: ${!u.approved}})'>${u.approved?'Revoke':'Approve'}</button>
+              </td>
+              <td style="color:var(--muted); font-size:12.5px;">${u.last_login ? new Date(u.last_login).toLocaleString() : '—'}</td>
+              <td></td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    }
+    async function updUser(id, patch) {
+      await apiPost('admin_user_update', { _id: id, ...patch });
+      toast('Updated.'); renderUsers(document.getElementById('main'));
+    }
+    window.updUser = updUser;
+
+    // ── Access Requests ───────────────────────────────────────────────────
+    async function renderRequests(m) {
+      const r = await apiGet('admin_requests');
+      m.innerHTML = `
+        <div class="admin-h"><div><h1>Access Requests</h1><p>Approve or deny confidential document requests.</p></div></div>
+        <table class="data">
+          <thead><tr><th>Requester</th><th>Project</th><th>Category</th><th>Note</th><th>Status</th><th>Date</th><th></th></tr></thead>
+          <tbody>${r.requests.map(x => `
+            <tr>
+              <td><b>${escapeHtml(x.email)}</b></td>
+              <td>${escapeHtml(x.projectId?.name || '—')}</td>
+              <td>${escapeHtml(x.categoryId?.name || x.section || '—')}</td>
+              <td style="max-width:280px; color:var(--muted);">${escapeHtml(x.note || '')}</td>
+              <td><span class="tag st-${x.status}">${x.status}</span></td>
+              <td style="color:var(--muted); font-size:12.5px;">${new Date(x.created_at).toLocaleString()}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${x.status === 'pending' ? `
+                  <button class="btn btn-primary btn-sm" onclick='decide(${JSON.stringify(x._id)}, "approved")'>Approve</button>
+                  <button class="btn btn-danger btn-sm" onclick='decide(${JSON.stringify(x._id)}, "denied")'>Deny</button>` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="7" style="text-align:center; color:var(--muted);">No access requests.</td></tr>'}
+          </tbody>
+        </table>`;
+    }
+    async function decide(id, decision) {
+      await apiPost('admin_request_decide', { _id: id, decision });
+      toast('Request ' + decision + '.'); renderRequests(document.getElementById('main'));
+    }
+    window.decide = decide;
+
+    // ── Audit Log ─────────────────────────────────────────────────────────
+    async function renderAudit(m) {
+      const r = await apiGet('admin_audit');
+      m.innerHTML = `
+        <div class="admin-h"><div><h1>Audit Log</h1><p>Last 200 recorded actions.</p></div></div>
+        <table class="data">
+          <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Target</th><th>IP</th></tr></thead>
+          <tbody>${r.audit.map(a => `
+            <tr>
+              <td style="color:var(--muted); font-size:12.5px;">${new Date(a.created_at).toLocaleString()}</td>
+              <td><b>${escapeHtml(a.email || '—')}</b></td>
+              <td>${a.role ? `<span class="tag role-${a.role}">${a.role}</span>` : '—'}</td>
+              <td><code>${escapeHtml(a.action)}</code></td>
+              <td style="color:var(--muted); font-size:12px;">${escapeHtml(a.target || '')}</td>
+              <td style="color:var(--muted); font-size:12px;">${escapeHtml(a.ip || '—')}</td>
+            </tr>`).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted);">No activity yet.</td></tr>'}
+          </tbody>
+        </table>`;
+    }
+
+    // Modal helpers
+    function openModal(title, bodyHtml, onSave) {
+      const box = document.getElementById('modalBox');
+      box.innerHTML = `
+        <div class="modal-head"><h3>${escapeHtml(title)}</h3><button class="icon-btn" onclick="closeModal()">${ICONS.x}</button></div>
+        <div class="modal-body">${bodyHtml}</div>
+        <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="modalSave">Save</button></div>`;
+      document.getElementById('modalSave').onclick = onSave;
+      document.getElementById('modal').classList.add('open');
+    }
+    function closeModal() { document.getElementById('modal').classList.remove('open'); }
+    window.closeModal = closeModal;
+  </script>
+</body>
+</html>
