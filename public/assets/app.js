@@ -182,11 +182,10 @@ function attachSearch(input, resultsEl) {
       resultsEl.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
       const r = await apiGet('search', { q });
       if (my !== last) return;
-      if (r.error === 'Not connected') {
-        resultsEl.innerHTML = `<div class="sr-empty">Sign in to search across your Google Drive.<br><a href="${API}?action=oauth_start" class="btn btn-primary btn-sm" style="margin-top:12px;">${ICONS.google} Sign in</a></div>`;
+      if (r.error && (!r.items || !r.items.length)) {
+        resultsEl.innerHTML = `<div class="sr-empty">${escapeHtml(r.error)}</div>`;
         return;
       }
-      if (r.error) { resultsEl.innerHTML = `<div class="sr-empty">${escapeHtml(r.error)}</div>`; return; }
       if (!r.items || !r.items.length) { resultsEl.innerHTML = `<div class="sr-empty">No files match "${escapeHtml(q)}"</div>`; return; }
       resultsEl.innerHTML = r.items.slice(0, 20).map(it => it.restricted
         ? `<div class="sr-item restricted">

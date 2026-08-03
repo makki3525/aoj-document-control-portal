@@ -50,7 +50,12 @@ const UserSchema = new mongoose.Schema({
   photo:         String,
   role:          { type: String, enum: ['admin','staff','viewer'], default: 'viewer' },
   approved:      { type: Boolean, default: false },      // for confidential access
-  refresh_token: String,                                 // encrypted
+  refresh_token: String,                                 // encrypted Drive refresh token
+  // Master Drive attached by admin — used for ALL public search/browse
+  drive_email:   String,
+  drive_name:    String,
+  drive_photo:   String,
+  drive_connected_at: Date,
   created_at:    { type: Date, default: Date.now },
   last_login:    { type: Date, default: Date.now },
 });
@@ -159,6 +164,15 @@ function getDrive(user, req) {
   const auth = oauthClient(req);
   auth.setCredentials({ refresh_token: decrypt(user.refresh_token) });
   return google.drive({ version: 'v3', auth });
+}
+// Master admin whose connected Drive backs the whole portal
+async function getMasterAdmin() {
+  return await User.findOne({ email: 'master-admin@aoj.local' });
+}
+async function getMasterDrive(req) {
+  const admin = await getMasterAdmin();
+  if (!admin || !admin.refresh_token) return null;
+  return { drive: getDrive(admin, req), admin };
 }
 function isInvalidGrant(e) {
   const blob = ((e && e.message) || '') + ' ' + JSON.stringify((e && e.response && e.response.data) || {});
@@ -284,6 +298,10 @@ module.exports = async (req, res) => {
     // AUTH
     // ────────────────────────────────────────────────────────────────────────
     if (action === 'oauth_start' && req.method === 'GET') {
+      const isAdminDrive = url.searchParams.get('admin_drive') === '1';
+      const state = isAdminDrive
+        ? 'admin_drive:' + Date.now()
+        : (url.searchParams.get('return') || '/');
       const auth = oauthClient(req);
       const authUrl = auth.generateAuthUrl({
         access_type: 'offline', prompt: 'consent',
@@ -292,7 +310,7 @@ module.exports = async (req, res) => {
           'https://www.googleapis.com/auth/userinfo.email',
           'https://www.googleapis.com/auth/userinfo.profile',
         ],
-        state: url.searchParams.get('return') || '/',
+        state,
       });
       res.statusCode = 302; res.setHeader('Location', authUrl); return res.end();
     }
@@ -309,6 +327,26 @@ module.exports = async (req, res) => {
       auth.setCredentials(tokens);
       const me = (await google.oauth2({ version: 'v2', auth }).userinfo.get()).data;
 
+      // Admin-Drive connect flow: state starts with 'admin_drive:'
+      if (state.startsWith('admin_drive:')) {
+        const current = await getSessionUser(req);
+        if (!current || current.role !== 'admin') {
+          res.statusCode = 302; res.setHeader('Location', '/admin?err=' + encodeURIComponent('Admin session required')); return res.end();
+        }
+        if (!tokens.refresh_token && !current.refresh_token) {
+          res.statusCode = 302; res.setHeader('Location', '/admin?err=' + encodeURIComponent('No refresh token — revoke previous access at myaccount.google.com/permissions and try again')); return res.end();
+        }
+        if (tokens.refresh_token) current.refresh_token = encrypt(tokens.refresh_token);
+        current.drive_email = me.email;
+        current.drive_name  = me.name;
+        current.drive_photo = me.picture;
+        current.drive_connected_at = new Date();
+        await current.save();
+        await audit(req, current, 'admin_drive_connect', me.email, {});
+        res.statusCode = 302; res.setHeader('Location', '/admin?drive=connected'); return res.end();
+      }
+
+      // Regular user login flow
       let user = await User.findOne({ email: me.email });
       if (!user) user = new User({ email: me.email });
       user.name  = me.name  || user.name;
@@ -316,7 +354,6 @@ module.exports = async (req, res) => {
       user.last_login = new Date();
       if (tokens.refresh_token) user.refresh_token = encrypt(tokens.refresh_token);
 
-      // Bootstrap first admin
       const anyAdmin = await User.exists({ role: 'admin' });
       if (!anyAdmin) {
         if (!BOOTSTRAP_ADMINS.length || BOOTSTRAP_ADMINS.includes(me.email)) {
@@ -379,15 +416,20 @@ module.exports = async (req, res) => {
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // SEARCH — uses the session user's Drive; confidential items marked restricted
+    // SEARCH — always uses the MASTER admin's Drive (single shared source).
+    // No login needed to search. Confidential hits are marked restricted for
+    // non-approved / non-admin users.
     // ────────────────────────────────────────────────────────────────────────
     if (action === 'search' && req.method === 'GET') {
       const q = (url.searchParams.get('q') || '').trim();
       if (!q) return json(res, 200, { items: [], q });
-      const user = await getSessionUser(req);
-      if (!user || !user.refresh_token) return json(res, 401, { error: 'Not connected', items: [] });
 
-      const drive = getDrive(user, req);
+      const m = await getMasterDrive(req);
+      if (!m) return json(res, 200, { items: [], q, error: 'The administrator has not connected a Google Drive yet.' });
+      const drive = m.drive;
+      const currentUser = await getSessionUser(req);
+      const canSeeConfidential = currentUser?.role === 'admin' || currentUser?.approved;
+
       const safe = q.replace(/'/g, "\\'");
       const query = `(name contains '${safe}' or fullText contains '${safe}') and trashed = false`;
       const list = await drive.files.list({
@@ -397,21 +439,19 @@ module.exports = async (req, res) => {
         supportsAllDrives: true, includeItemsFromAllDrives: true,
       });
 
-      // Load categories to know which drive IDs are confidential
       const cats = await Category.find({ drive_url: { $ne: null } }).lean();
       const confidentialIds = new Set(cats.filter(c => c.section === 'confidential').map(c => extractDriveId(c.drive_url)).filter(Boolean));
 
-      // Parent folder names for context
       const parentIds = [...new Set(list.data.files.flatMap(f => f.parents || []))].slice(0, 30);
       const parentMap = {};
       await Promise.all(parentIds.map(async pid => {
-        try { const m = await drive.files.get({ fileId: pid, fields: 'id,name', supportsAllDrives: true }); parentMap[pid] = m.data.name; }
+        try { const md = await drive.files.get({ fileId: pid, fields: 'id,name', supportsAllDrives: true }); parentMap[pid] = md.data.name; }
         catch (_) {}
       }));
 
       const items = list.data.files.map(f => {
         const inConfidential = (f.parents || []).some(p => confidentialIds.has(p));
-        const restricted = inConfidential && !user.approved && user.role !== 'admin';
+        const restricted = inConfidential && !canSeeConfidential;
         return {
           ...mapFile(f),
           folder: (f.parents && parentMap[f.parents[0]]) || null,
@@ -453,6 +493,7 @@ module.exports = async (req, res) => {
 
     if (action === 'admin_stats' && req.method === 'GET') {
       const u = await guard(); if (!u) return;
+      const master = await getMasterAdmin();
       const [projects, categories, users, pending, audit24] = await Promise.all([
         Project.countDocuments({ active: true }),
         Category.countDocuments({ active: true }),
@@ -460,7 +501,54 @@ module.exports = async (req, res) => {
         AccessRequest.countDocuments({ status: 'pending' }),
         AuditLog.countDocuments({ created_at: { $gte: new Date(Date.now() - 86400000) } }),
       ]);
-      return json(res, 200, { projects, categories, users, pending_requests: pending, actions_24h: audit24 });
+      return json(res, 200, {
+        projects, categories, users, pending_requests: pending, actions_24h: audit24,
+        drive: master && master.refresh_token ? {
+          connected: true, email: master.drive_email, name: master.drive_name,
+          photo: master.drive_photo, connected_at: master.drive_connected_at,
+        } : { connected: false },
+      });
+    }
+
+    // Master Drive status
+    if (action === 'admin_drive_status' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const m = await getMasterAdmin();
+      if (!m || !m.refresh_token) return json(res, 200, { connected: false });
+      try {
+        const drive = getDrive(m, req);
+        const info = await drive.about.get({ fields: 'user(emailAddress,displayName,photoLink),storageQuota(limit,usage)' });
+        return json(res, 200, {
+          connected: true,
+          email: info.data.user.emailAddress,
+          name:  info.data.user.displayName,
+          photo: info.data.user.photoLink,
+          storage: {
+            limit: info.data.storageQuota?.limit ? formatBytes(parseInt(info.data.storageQuota.limit)) : 'Unlimited',
+            used:  formatBytes(parseInt(info.data.storageQuota?.usage || 0)),
+          },
+          connected_at: m.drive_connected_at,
+        });
+      } catch (e) {
+        if (isInvalidGrant(e)) {
+          m.refresh_token = undefined; await m.save();
+          return json(res, 200, { connected: false, error: 'Access revoked. Please reconnect.' });
+        }
+        return json(res, 200, { connected: true, error: e.message });
+      }
+    }
+
+    // Disconnect master Drive
+    if (action === 'admin_drive_disconnect' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const m = await getMasterAdmin();
+      if (m) {
+        m.refresh_token = undefined; m.drive_email = undefined; m.drive_name = undefined;
+        m.drive_photo = undefined; m.drive_connected_at = undefined;
+        await m.save();
+      }
+      await audit(req, u, 'admin_drive_disconnect', 'master', {});
+      return json(res, 200, { ok: true });
     }
 
     // Projects CRUD
