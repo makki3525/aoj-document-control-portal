@@ -93,16 +93,16 @@ async function refreshAuthArea() {
   const el = document.getElementById('navAuth'); if (!el) return;
   const me = await apiGet('me');
   window.__me = me;
+  // Hide admin session entirely on the public site. Admins access via /admin directly.
+  const isMasterAdmin = me.connected && me.email === 'master-admin@aoj.local';
+  if (isMasterAdmin) { el.innerHTML = ''; return; }
+
   if (me.connected) {
-    const adminLink = me.role === 'admin' ? `<a href="/admin" class="btn btn-ghost btn-sm">${ICONS.shield} Admin</a>` : '';
     el.innerHTML = `
-      <div style="display:flex; align-items:center; gap:8px;">
-        ${adminLink}
-        <div style="display:flex; align-items:center; gap:8px; border:1px solid var(--border); padding:4px 12px 4px 4px; border-radius:999px; background:var(--surface);">
-          ${me.photo ? `<img src="${me.photo}" referrerpolicy="no-referrer" alt="" style="width:30px; height:30px; border-radius:50%;">` : ''}
-          <b style="font-size:13px;">${escapeHtml(me.name || me.email)}</b>
-          <button class="icon-btn" style="width:26px; height:26px;" onclick="logout()" title="Sign out">${ICONS.x}</button>
-        </div>
+      <div style="display:flex; align-items:center; gap:8px; border:1px solid var(--border); padding:4px 12px 4px 4px; border-radius:999px; background:var(--surface);">
+        ${me.photo ? `<img src="${me.photo}" referrerpolicy="no-referrer" alt="" style="width:30px; height:30px; border-radius:50%;">` : ''}
+        <b style="font-size:13px;">${escapeHtml(me.name || me.email)}</b>
+        <button class="icon-btn" style="width:26px; height:26px;" onclick="logout()" title="Sign out">${ICONS.x}</button>
       </div>`;
   } else {
     el.innerHTML = `<a href="${API}?action=oauth_start" class="btn btn-primary">${ICONS.google} Sign in</a>`;
