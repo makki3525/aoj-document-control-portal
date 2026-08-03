@@ -14,8 +14,8 @@ const jwt      = require('jsonwebtoken');
 const MONGO_URI  = 'mongodb+srv://makki3525873_db_user:Karan786youme@makki786.88sw6dj.mongodb.net/aoj_portal?appName=aoj';
 const JWT_SECRET = 'aoj_jwt_secret_change_me_5f9c1b_a83d4e2f9b7c6d5e';
 const ENC_KEY    = 'UtAC2SOoMgVup25BMcTOUL2vcVoel74it4prz2oqMzA=';
-const GOOGLE_ID     = '39499304287-l9g5dasjm3r2hrburjnn6ud66qsvv3g0.apps.googleusercontent.com';
-const GOOGLE_SECRET = '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';
+const GOOGLE_ID     = '601058518061-a0q7e2gc85afbn397vp431be5vjuqb0f.apps.googleusercontent.com';
+const GOOGLE_SECRET = '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';
 
 // First Google account to sign in whose email is in this list becomes the initial admin.
 // Leave empty to auto-promote the very first sign-in as admin.
