@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — AOJ Document Control Portal</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="nav-slot"></div>
+
+  <div style="min-height:calc(100vh - 71px); display:grid; place-items:center; padding:40px 20px;">
+    <div class="neo-card" style="width:100%; max-width:440px; padding:38px;">
+      <div style="text-align:center; margin-bottom:26px;">
+        <div class="neo-mark" style="width:56px; height:56px; margin:0 auto 16px; border-radius:14px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:grid; place-items:center; font-weight:800;">AOJ</div>
+        <h1 id="fTitle" style="margin:0 0 4px; font-size:24px; letter-spacing:-0.02em;">Welcome back</h1>
+        <p id="fSub" style="margin:0; color:var(--muted); font-size:14px;">Sign in to your AOJ portal account.</p>
+      </div>
+
+      <div id="err" style="display:none; background:var(--brand-soft); color:var(--brand); padding:12px 14px; border-radius:10px; font-size:13.5px; margin-bottom:16px;"></div>
+
+      <div class="field" id="nameField" style="display:none;">
+        <label>Full name</label>
+        <input id="fName" autocomplete="name" placeholder="Your name">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input id="fEmail" type="email" autocomplete="email" placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input id="fPass" type="password" autocomplete="current-password" placeholder="••••••••">
+      </div>
+
+      <button class="btn btn-primary btn-lg" id="fBtn" style="width:100%; margin-top:8px;">Sign in</button>
+
+      <div style="text-align:center; margin-top:20px; font-size:14px; color:var(--muted);">
+        <span id="switchTxt">Don't have an account?</span>
+        <a id="switchBtn" style="color:var(--brand); font-weight:600; cursor:pointer;">Create one</a>
+      </div>
+
+      <div style="text-align:center; margin-top:16px;">
+        <a href="/" style="color:var(--muted); font-size:13px;">← Back to portal</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script>
+    document.getElementById('nav-slot').innerHTML = renderNav('');
+    refreshAuthArea();
+
+    let mode = 'login';
+    const q = new URLSearchParams(location.search);
+    if (q.get('mode') === 'register') switchMode('register');
+    if (q.get('email')) document.getElementById('fEmail').value = q.get('email');
+
+    function switchMode(m) {
+      mode = m;
+      const isReg = m === 'register';
+      document.getElementById('fTitle').textContent = isReg ? 'Create your account' : 'Welcome back';
+      document.getElementById('fSub').textContent = isReg ? 'Sign up to request access to AOJ documents.' : 'Sign in to your AOJ portal account.';
+      document.getElementById('nameField').style.display = isReg ? '' : 'none';
+      document.getElementById('fBtn').textContent = isReg ? 'Create account' : 'Sign in';
+      document.getElementById('switchTxt').textContent = isReg ? 'Already have an account?' : "Don't have an account?";
+      document.getElementById('switchBtn').textContent = isReg ? 'Sign in' : 'Create one';
+      document.getElementById('fPass').autocomplete = isReg ? 'new-password' : 'current-password';
+      document.getElementById('err').style.display = 'none';
+    }
+    document.getElementById('switchBtn').addEventListener('click', () => switchMode(mode === 'login' ? 'register' : 'login'));
+
+    async function submit() {
+      const btn = document.getElementById('fBtn'); const err = document.getElementById('err');
+      err.style.display = 'none';
+      const email = document.getElementById('fEmail').value.trim();
+      const pass  = document.getElementById('fPass').value;
+      const name  = document.getElementById('fName').value.trim();
+      if (!email || !pass) { err.textContent = 'Please fill in email and password.'; err.style.display = 'block'; return; }
+      if (mode === 'register' && !name) { err.textContent = 'Please enter your name.'; err.style.display = 'block'; return; }
+      btn.disabled = true; btn.textContent = mode === 'register' ? 'Creating…' : 'Signing in…';
+      const r = await apiPost(mode === 'register' ? 'register' : 'login', { name, email, password: pass });
+      if (r.ok) { location.href = q.get('return') || '/'; return; }
+      err.textContent = r.error || 'Something went wrong'; err.style.display = 'block';
+      btn.disabled = false; btn.textContent = mode === 'register' ? 'Create account' : 'Sign in';
+    }
+    document.getElementById('fBtn').addEventListener('click', submit);
+    ['fEmail','fPass','fName'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') submit(); }));
+    document.getElementById('fEmail').focus();
+  </script>
+</body>
+</html>

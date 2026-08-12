@@ -91,6 +91,7 @@
             <div class="admin-nav">
               <a data-tab="dash" class="active">📊 Dashboard</a>
               <a data-tab="drive">🔗 Google Drive</a>
+              <a data-tab="files">📂 File Manager</a>
               <a data-tab="projects">🏗 Projects</a>
               <a data-tab="categories">📁 Categories</a>
               <a data-tab="users">👥 Users</a>
@@ -131,7 +132,7 @@
     async function showTab(tab) {
       const m = document.getElementById('main');
       m.innerHTML = `<div class="loading"><span class="spinner"></span></div>`;
-      const fns = { dash: renderDash, drive: renderDrive, projects: renderProjects, categories: renderCategories, users: renderUsers, requests: renderRequests, audit: renderAudit };
+      const fns = { dash: renderDash, drive: renderDrive, files: renderFiles, projects: renderProjects, categories: renderCategories, users: renderUsers, requests: renderRequests, audit: renderAudit };
       await safeCall(() => fns[tab](m), m);
     }
 
@@ -224,6 +225,72 @@
           </div>`;
       }
     }
+    // ── Drive File Manager ────────────────────────────────────────────────
+    let fmFolder = { id: 'root', name: 'My Drive' };
+    let fmStack = [];
+    async function renderFiles(m) {
+      const r = await apiGet('admin_drive_list', { folder: fmFolder.id });
+      if (r.error) throw new Error(r.error);
+      const items = r.items || [];
+      m.innerHTML = `
+        <div class="admin-h">
+          <div>
+            <h1>File Manager</h1>
+            <p>Browse, rename, move and delete anything in the master Drive.</p>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-ghost" onclick="fmMkdir()">+ New Folder</button>
+          </div>
+        </div>
+        <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:14px;">
+          ${fmStack.length ? `<button class="btn btn-ghost btn-sm" onclick="fmBack()">← Back</button>` : ''}
+          <span style="color:var(--muted);">Location:</span>
+          <b>${escapeHtml(fmFolder.name)}</b>
+          ${fmStack.length ? `<span style="color:var(--muted); font-size:12px;">(${fmStack.map(s => escapeHtml(s.name)).join(' / ')} / ${escapeHtml(fmFolder.name)})</span>` : ''}
+        </div>
+        <table class="data">
+          <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th><th style="width:220px;"></th></tr></thead>
+          <tbody>${items.map(it => `
+            <tr>
+              <td>
+                ${it.type === 'folder'
+                  ? `<a onclick='fmOpen(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})' style="cursor:pointer; color:var(--brand); font-weight:600;">📁 ${escapeHtml(it.name)}</a>`
+                  : `<span>📄 ${escapeHtml(it.name)}</span>`}
+              </td>
+              <td style="color:var(--muted); font-size:12.5px;">${escapeHtml(it.mimeType.split('.').pop())}</td>
+              <td style="color:var(--muted);">${escapeHtml(it.size || '—')}</td>
+              <td style="color:var(--muted); font-size:12.5px;">${it.modified ? new Date(it.modified).toLocaleDateString() : '—'}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                <a class="btn btn-ghost btn-sm" href="${escapeHtml(it.link)}" target="_blank">Open</a>
+                <button class="btn btn-ghost btn-sm" onclick='fmRename(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Rename</button>
+                <button class="btn btn-danger btn-sm" onclick='fmDelete(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Delete</button>
+              </td>
+            </tr>`).join('') || `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:32px;">Empty folder.</td></tr>`}
+          </tbody>
+        </table>`;
+    }
+    function fmOpen(id, name) { fmStack.push(fmFolder); fmFolder = { id, name }; showTab('files'); }
+    function fmBack() { fmFolder = fmStack.pop() || { id: 'root', name: 'My Drive' }; showTab('files'); }
+    async function fmRename(id, cur) {
+      const name = prompt('Rename to:', cur); if (!name || name === cur) return;
+      const r = await apiPost('admin_drive_rename', { fileId: id, name });
+      if (r.error) return toast(r.error, 'err');
+      toast('Renamed.'); showTab('files');
+    }
+    async function fmDelete(id, name) {
+      if (!confirm('Move "' + name + '" to Trash? This affects the master Drive.')) return;
+      const r = await apiPost('admin_drive_delete', { fileId: id });
+      if (r.error) return toast(r.error, 'err');
+      toast('Moved to trash.'); showTab('files');
+    }
+    async function fmMkdir() {
+      const name = prompt('New folder name:'); if (!name) return;
+      const r = await apiPost('admin_drive_mkdir', { parentId: fmFolder.id, name });
+      if (r.error) return toast(r.error, 'err');
+      toast('Folder created.'); showTab('files');
+    }
+    window.fmOpen = fmOpen; window.fmBack = fmBack; window.fmRename = fmRename; window.fmDelete = fmDelete; window.fmMkdir = fmMkdir;
+
     async function disconnectDrive() {
       if (!confirm('Disconnect the master Google Drive? Search and document links will stop working until you reconnect.')) return;
       const r = await apiPost('admin_drive_disconnect', {});
@@ -416,10 +483,13 @@
       const r = await apiGet('admin_users');
       if (r.error) throw new Error(r.error);
       m.innerHTML = `
-        <div class="admin-h"><div><h1>Users</h1><p>Assign roles and approve confidential access.</p></div></div>
+        <div class="admin-h">
+          <div><h1>Users</h1><p>Assign roles and set confidential access level. Or grant access directly by email.</p></div>
+          <button class="btn btn-primary" onclick="grantAccessModal()">+ Grant access by email</button>
+        </div>
         <table class="data">
-          <thead><tr><th>User</th><th>Role</th><th>Confidential Access</th><th>Last Login</th></tr></thead>
-          <tbody>${(r.users || []).map(u => `
+          <thead><tr><th>User</th><th>Portal role</th><th>Confidential access</th><th>Last login</th></tr></thead>
+          <tbody>${(r.users || []).filter(u => u.email !== 'master-admin@aoj.local').map(u => `
             <tr>
               <td>
                 <div style="display:flex; align-items:center; gap:10px;">
@@ -428,15 +498,19 @@
                 </div>
               </td>
               <td>
-                <select onchange='updUser(${JSON.stringify(u._id)}, {role: this.value})' style="padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text); font-family:inherit;">
+                <select onchange='updUser(${JSON.stringify(u._id)}, {role: this.value})'>
                   <option value="viewer"${u.role==='viewer'?' selected':''}>Viewer</option>
                   <option value="staff"${u.role==='staff'?' selected':''}>Staff</option>
                   <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
                 </select>
               </td>
               <td>
-                <span class="tag st-${u.approved?'approved':'pending'}">${u.approved?'Approved':'Not approved'}</span>
-                <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick='updUser(${JSON.stringify(u._id)}, {approved: ${!u.approved}})'>${u.approved?'Revoke':'Approve'}</button>
+                <select onchange='updUser(${JSON.stringify(u._id)}, {access_level: this.value, approved: this.value !== "none"})'>
+                  <option value="none"${(u.access_level||'none')==='none'?' selected':''}>None</option>
+                  <option value="viewer"${u.access_level==='viewer'?' selected':''}>Viewer</option>
+                  <option value="editor"${u.access_level==='editor'?' selected':''}>Editor</option>
+                  <option value="admin"${u.access_level==='admin'?' selected':''}>Admin</option>
+                </select>
               </td>
               <td style="color:var(--muted); font-size:12.5px;">${u.last_login ? new Date(u.last_login).toLocaleString() : '—'}</td>
             </tr>`).join('') || '<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:32px;">No registered users yet.</td></tr>'}
@@ -449,6 +523,35 @@
       toast('Updated.'); showTab('users');
     }
     window.updUser = updUser;
+
+    async function grantAccessModal() {
+      // Load categories for optional direct share
+      if (!projectsCache.length) { const r = await apiGet('admin_projects'); projectsCache = r.projects || []; }
+      const catRes = await apiGet('admin_categories');
+      const cats = (catRes.categories || []).filter(c => c.section === 'confidential' && c.drive_url);
+      openModal('Grant confidential access', `
+        <div class="field"><label>Email *</label><input id="g-email" type="email" placeholder="user@example.com"></div>
+        <div class="field"><label>Access level</label>
+          <select id="g-level"><option value="viewer">Viewer</option><option value="editor">Editor</option></select>
+        </div>
+        <div class="field"><label>Also share a specific confidential folder/file (optional)</label>
+          <select id="g-cat"><option value="">— none —</option>
+            ${cats.map(c => `<option value="${c._id}">${escapeHtml((projectsCache.find(p => String(p._id) === String(c.projectId)) || {}).name || '—')} · ${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <p style="color:var(--muted); font-size:13px; margin:12px 0 0;">An email will be sent to the user confirming their new access.</p>
+      `, async () => {
+        const email = document.getElementById('g-email').value.trim();
+        if (!email || !email.includes('@')) return toast('Valid email required', 'err');
+        const r = await apiPost('admin_grant_access', {
+          email, access_level: document.getElementById('g-level').value,
+          categoryId: document.getElementById('g-cat').value || null,
+        });
+        if (r.error) return toast(r.error, 'err');
+        toast('Access granted and email sent.'); closeModal(); showTab('users');
+      });
+    }
+    window.grantAccessModal = grantAccessModal;
 
     // ── Access Requests ──────────────────────────────────────────────────
     async function renderRequests(m) {
@@ -468,8 +571,9 @@
               <td style="color:var(--muted); font-size:12.5px;">${new Date(x.created_at).toLocaleString()}</td>
               <td style="text-align:right; white-space:nowrap;">
                 ${x.status === 'pending' ? `
-                  <button class="btn btn-primary btn-sm" onclick='decide(${JSON.stringify(x._id)}, "approved")'>Approve</button>
-                  <button class="btn btn-danger btn-sm" onclick='decide(${JSON.stringify(x._id)}, "denied")'>Deny</button>` : ''}
+                  <button class="btn btn-primary btn-sm" onclick='decide(${JSON.stringify(x._id)}, "viewer")'>Viewer</button>
+                  <button class="btn btn-ghost btn-sm" onclick='decide(${JSON.stringify(x._id)}, "editor")'>Editor</button>
+                  <button class="btn btn-danger btn-sm" onclick='decide(${JSON.stringify(x._id)}, "denied")'>Reject</button>` : ''}
               </td>
             </tr>`).join('') || '<tr><td colspan="7" style="text-align:center; color:var(--muted); padding:32px;">No access requests.</td></tr>'}
           </tbody>

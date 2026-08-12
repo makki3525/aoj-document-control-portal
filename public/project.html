@@ -31,18 +31,22 @@
     <div class="modal">
       <div class="modal-head">
         <h3>Request access to Confidential documents</h3>
-        <button class="icon-btn" onclick="closeReq()">${''}</button>
+        <button class="icon-btn" onclick="closeReq()">✕</button>
       </div>
       <div class="modal-body">
         <p style="color:var(--muted); margin:0 0 16px; font-size:14px;">
-          An administrator will review your request. You'll be notified by email once access is granted.
+          Enter your email — the administrator will review your request and share the file directly with you if approved.
         </p>
-        <div class="field">
-          <label>Category</label>
-          <input id="reqCat" disabled>
+        <div class="field"><label>Category</label><input id="reqCat" disabled></div>
+        <div class="field"><label>Your name</label><input id="reqName" placeholder="Full name"></div>
+        <div class="field"><label>Your email *</label><input id="reqEmail" type="email" placeholder="you@example.com"></div>
+        <div class="field"><label>Access level</label>
+          <select id="reqLevel">
+            <option value="viewer">Viewer (read-only)</option>
+            <option value="editor">Editor (can edit)</option>
+          </select>
         </div>
-        <div class="field">
-          <label>Reason for access (optional)</label>
+        <div class="field"><label>Reason for access (optional)</label>
           <textarea id="reqNote" placeholder="e.g. Need to review Contract Vol. 2 for VE proposal"></textarea>
         </div>
       </div>
@@ -166,26 +170,37 @@
       }).join('')}</div>`;
     }
 
-    // Access request modal
+    // Access request modal — email-based (no login required)
     let currentReq = null;
     function openReq(catId, catName, section) {
-      if (!me?.connected) { location.href = API + '?action=oauth_start&return=' + encodeURIComponent(location.pathname); return; }
       currentReq = { categoryId: catId, section };
       document.getElementById('reqCat').value = catName;
+      document.getElementById('reqName').value  = me?.name  || '';
+      document.getElementById('reqEmail').value = (me?.email && !me.email.endsWith('@aoj.local')) ? me.email : '';
       document.getElementById('reqNote').value = '';
+      document.getElementById('reqLevel').value = 'viewer';
       document.getElementById('reqModal').classList.add('open');
+      setTimeout(() => document.getElementById('reqEmail').focus(), 100);
     }
     function closeReq() { document.getElementById('reqModal').classList.remove('open'); }
     window.openReq = openReq; window.closeReq = closeReq;
     document.getElementById('reqSubmit').addEventListener('click', async () => {
       if (!currentReq) return;
+      const email = document.getElementById('reqEmail').value.trim();
+      if (!email || !email.includes('@')) return toast('Please enter a valid email', 'err');
+      const btn = document.getElementById('reqSubmit');
+      btn.disabled = true; btn.textContent = 'Sending…';
       const r = await apiPost('request_access', {
         projectId: project._id,
         categoryId: currentReq.categoryId,
         section: currentReq.section,
-        note: document.getElementById('reqNote').value,
+        email,
+        name: document.getElementById('reqName').value.trim(),
+        requested_level: document.getElementById('reqLevel').value,
+        note: document.getElementById('reqNote').value.trim(),
       });
-      if (r.ok) { toast(r.existing ? 'You already have a pending request for this.' : 'Access request submitted.'); closeReq(); }
+      btn.disabled = false; btn.textContent = 'Submit Request';
+      if (r.ok) { toast(r.existing ? 'You already have a pending request.' : (r.message || 'Request submitted — admin has been notified.')); closeReq(); }
       else toast(r.error || 'Failed', 'err');
     });
 

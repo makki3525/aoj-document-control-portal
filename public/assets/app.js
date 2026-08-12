@@ -105,7 +105,9 @@ async function refreshAuthArea() {
         <button class="icon-btn" style="width:26px; height:26px;" onclick="logout()" title="Sign out">${ICONS.x}</button>
       </div>`;
   } else {
-    el.innerHTML = `<a href="${API}?action=oauth_start" class="btn btn-primary">${ICONS.google} Sign in</a>`;
+    el.innerHTML = `
+      <a href="/login" class="btn btn-ghost btn-sm">Sign in</a>
+      <a href="/login?mode=register" class="btn btn-primary btn-sm">Sign up</a>`;
   }
 }
 async function logout() { await apiGet('logout'); location.reload(); }
