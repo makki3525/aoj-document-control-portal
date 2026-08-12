@@ -527,6 +527,7 @@ module.exports = async (req, res) => {
             grouped.confidential.push({
               _id: c._id, projectId: c.projectId, section: c.section, name: c.name,
               sort: c.sort, active: c.active, drive_url: null, drive_type: null,
+              restricted: true,  // ← tells frontend to show "Request access"
             });
             continue;
           }

@@ -574,3 +574,19 @@ table.data tbody tr:hover { background: transparent !important; box-shadow: var(
 [data-theme="dark"] .tag.st-viewer { background: #052e1c; color: #86efac; }
 [data-theme="dark"] .tag.st-editor { background: #172554; color: #93c5fd; }
 select { padding: 6px 10px; border-radius: 8px; box-shadow: var(--neo-inset); background: var(--surface); color: var(--text); border: none; font-family: inherit; font-size: 13px; }
+
+/* ═══ FILE MANAGER + admin table action cell fixes ═══════════════════════ */
+table.data td .btn { margin: 2px 3px; }
+table.data td:last-child { text-align: right; padding: 10px 14px; }
+.fm-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.fm-actions .btn { padding: 5px 10px; font-size: 12px; margin: 0; white-space: nowrap; }
+table.data td { vertical-align: middle; }
+table.data { overflow: visible; }
+.admin-main { overflow-x: auto; }
+.admin-main table.data { min-width: 720px; }
+
+/* Long URLs shouldn't stretch table */
+table.data td a[href^="http"] { display: inline-block; max-width: 380px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; white-space: nowrap; }
+
+/* Category table action column narrower */
+table.data th:last-child, table.data td:last-child { min-width: 160px; }

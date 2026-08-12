@@ -31,8 +31,31 @@
 
   <script src="/assets/app.js"></script>
   <script>
-    document.getElementById('nav-slot').innerHTML = renderNav('');
-    refreshAuthArea();
+    // Admin-only nav — no public "Sign in/Sign up" buttons, no public pages
+    document.getElementById('nav-slot').innerHTML = `
+      <nav class="nav">
+        <div class="nav-inner">
+          <a href="/admin" class="brand">
+            <div class="brand-mark">AOJ</div>
+            <div class="brand-name">AOJ Contracting Co LLC<small>ADMIN PANEL</small></div>
+          </a>
+          <div class="nav-cta" style="margin-left:auto;">
+            <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme">${ICONS.moon}</button>
+            <div id="adminAuth"></div>
+          </div>
+        </div>
+      </nav>`;
+    (async () => {
+      const me = await apiGet('admin_me');
+      const el = document.getElementById('adminAuth');
+      if (el && me.connected) {
+        el.innerHTML = `<div style="display:flex; align-items:center; gap:8px; border:none; padding:4px 12px 4px 4px; border-radius:999px; background:var(--surface); box-shadow:var(--neo-shadow-sm);">
+          <div style="width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:grid; place-items:center; font-weight:700; font-size:12px;">${escapeHtml((me.name||'A')[0])}</div>
+          <b style="font-size:13px;">${escapeHtml(me.name || 'Admin')}</b>
+          <button class="icon-btn" style="width:26px; height:26px;" onclick="signOut()" title="Sign out">${ICONS.x}</button>
+        </div>`;
+      }
+    })();
 
     let projectsCache = [];
 
@@ -260,10 +283,12 @@
               <td style="color:var(--muted); font-size:12.5px;">${escapeHtml(it.mimeType.split('.').pop())}</td>
               <td style="color:var(--muted);">${escapeHtml(it.size || '—')}</td>
               <td style="color:var(--muted); font-size:12.5px;">${it.modified ? new Date(it.modified).toLocaleDateString() : '—'}</td>
-              <td style="text-align:right; white-space:nowrap;">
-                <a class="btn btn-ghost btn-sm" href="${escapeHtml(it.link)}" target="_blank">Open</a>
-                <button class="btn btn-ghost btn-sm" onclick='fmRename(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Rename</button>
-                <button class="btn btn-danger btn-sm" onclick='fmDelete(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Delete</button>
+              <td>
+                <div class="fm-actions">
+                  <a class="btn btn-ghost btn-sm" href="${escapeHtml(it.link)}" target="_blank">Open</a>
+                  <button class="btn btn-ghost btn-sm" onclick='fmRename(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Rename</button>
+                  <button class="btn btn-danger btn-sm" onclick='fmDelete(${JSON.stringify(it.id)}, ${JSON.stringify(it.name)})'>Delete</button>
+                </div>
               </td>
             </tr>`).join('') || `<tr><td colspan="5" style="text-align:center; color:var(--muted); padding:32px;">Empty folder.</td></tr>`}
           </tbody>
@@ -320,10 +345,10 @@
               <td>${escapeHtml(p.location || '—')}</td>
               <td><span class="pcard-badge badge-${p.status}" style="position:static;">${p.status}</span></td>
               <td>${p.active ? '✓' : '—'}</td>
-              <td style="text-align:right; white-space:nowrap;">
+              <td><div class="fm-actions">
                 <button class="btn btn-ghost btn-sm" onclick='editProject(${JSON.stringify(p._id)})'>Edit</button>
                 <button class="btn btn-danger btn-sm" onclick='delProject(${JSON.stringify(p._id)})'>Archive</button>
-              </td>
+              </div></td>
             </tr>`).join('') || '<tr><td colspan="6" style="text-align:center; color:var(--muted); padding:32px;">No projects yet — click "+ New Project" above.</td></tr>'}
           </tbody>
         </table>`;
@@ -418,10 +443,10 @@
                 <td style="max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                   ${c.drive_url ? `<a href="${escapeHtml(c.drive_url)}" target="_blank" style="color:var(--brand);">${escapeHtml(c.drive_url)}</a>` : '<span style="color:var(--muted);">not mapped</span>'}
                 </td>
-                <td style="text-align:right; white-space:nowrap;">
+                <td><div class="fm-actions">
                   <button class="btn btn-ghost btn-sm" onclick='editCat(${JSON.stringify(c._id)})'>Edit</button>
                   <button class="btn btn-danger btn-sm" onclick='delCat(${JSON.stringify(c._id)})'>Remove</button>
-                </td>
+                </div></td>
               </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:var(--muted); padding:20px;">No ${sec} categories yet.</td></tr>`}
             </tbody>
           </table>`).join('')}`;

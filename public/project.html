@@ -142,12 +142,11 @@
 
     function renderCategories(section, cats) {
       if (!cats.length) return `<div class="empty" style="padding:24px;"><p>No categories yet — an admin can add them.</p></div>`;
-      const authed = me?.connected;
-      const canOpenConf = me?.role === 'admin' || me?.approved;
 
       return `<div class="cat-grid">${cats.map(c => {
         const hasLink = !!c.drive_url;
-        const restricted = section.key === 'confidential' && !canOpenConf;
+        // Server flags confidential items with `restricted:true` when user lacks a grant.
+        const restricted = !!c.restricted || (section.key === 'confidential' && !hasLink);
 
         if (restricted) {
           return `<button class="cat-btn locked js-req" data-id="${escapeHtml(c._id)}" data-name="${escapeHtml(c.name)}" data-section="${escapeHtml(section.key)}">
