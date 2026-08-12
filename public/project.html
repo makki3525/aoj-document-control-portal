@@ -150,9 +150,10 @@
         const restricted = section.key === 'confidential' && !canOpenConf;
 
         if (restricted) {
+          // Backend has already stripped drive_url. Show button that opens request modal only.
           return `<button class="cat-btn locked" onclick="openReq('${c._id}', ${JSON.stringify(c.name).slice(1,-1)}, '${section.key}')">
             <div class="ico">${ICONS.lock}</div>
-            <div class="body"><b>${escapeHtml(c.name)}</b><small>${authed ? 'Request access' : 'Sign in required'}</small></div>
+            <div class="body"><b>${escapeHtml(c.name)}</b><small>Request access</small></div>
             <div class="go">${ICONS.chevron}</div>
           </button>`;
         }

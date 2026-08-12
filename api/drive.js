@@ -13,26 +13,27 @@ const jwt      = require('jsonwebtoken');
 const bcrypt   = require('bcryptjs');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CONFIG
+// CONFIG — reads from env vars in production, falls back to dev defaults.
+// For production, set these in Vercel dashboard → Project → Settings → Env Vars.
 // ═══════════════════════════════════════════════════════════════════════════
-const MONGO_URI  = 'mongodb+srv://makki3525873_db_user:Karan786youme@makki786.88sw6dj.mongodb.net/aoj_portal?appName=aoj';
-const JWT_SECRET = 'aoj_jwt_secret_change_me_5f9c1b_a83d4e2f9b7c6d5e';
-const ENC_KEY    = 'UtAC2SOoMgVup25BMcTOUL2vcVoel74it4prz2oqMzA=';
+const MONGO_URI  = process.env.MONGO_URI  || 'mongodb+srv://makki3525873_db_user:Karan786youme@makki786.88sw6dj.mongodb.net/aoj_portal?appName=aoj';
+const JWT_SECRET = process.env.JWT_SECRET || 'aoj_jwt_secret_change_me_5f9c1b_a83d4e2f9b7c6d5e';
+const ENC_KEY    = process.env.ENC_KEY    || 'UtAC2SOoMgVup25BMcTOUL2vcVoel74it4prz2oqMzA=';
 
-// Google OAuth for master admin Drive
-const GOOGLE_ID     = '601058518061-a0q7e2gc85afbn397vp431be5vjuqb0f.apps.googleusercontent.com';
-const GOOGLE_SECRET = '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';
+const GOOGLE_ID     = process.env.GOOGLE_CLIENT_ID     || '601058518061-a0q7e2gc85afbn397vp431be5vjuqb0f.apps.googleusercontent.com';
+const GOOGLE_SECRET = process.env.GOOGLE_CLIENT_SECRET || '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';
 
-// Master admin password login
-const MASTER_ADMIN_USER = 'mad6755';
-const MASTER_ADMIN_PASS = 'mad@(675)';
+const MASTER_ADMIN_USER = process.env.MASTER_ADMIN_USER || 'mad6755';
+const MASTER_ADMIN_PASS = process.env.MASTER_ADMIN_PASS || 'mad@(675)';
 
-// Gmail sender (pre-authorized refresh token — sends notification emails to admin)
-const GMAIL_FROM         = 'service@nayapay.com';
-const GMAIL_ADMIN_INBOX  = 'dc@aoj-sa.com';
-const GMAIL_REFRESH_TOKEN = '1//01ruq0Ak4LcJuCgYIARAAGAESNwF-L9IrcwaAR3VSwU7n-fkhTHz9u4CTCWtQ8fp_JfmRpD7F5uAvAg44H9cnqtuRxMO4YYQXHaw';
+const GMAIL_FROM          = process.env.GMAIL_FROM          || 'service@nayapay.com';
+const GMAIL_ADMIN_INBOX   = process.env.ADMIN_EMAIL         || 'dc@aoj-sa.com';
+const GMAIL_REFRESH_TOKEN = process.env.GMAIL_REFRESH_TOKEN || '1//01ruq0Ak4LcJuCgYIARAAGAESNwF-L9IrcwaAR3VSwU7n-fkhTHz9u4CTCWtQ8fp_JfmRpD7F5uAvAg44H9cnqtuRxMO4YYQXHaw';
+
+const APP_URL_ENV = process.env.APP_URL || '';
 
 function getBaseURL(req) {
+  if (APP_URL_ENV) return APP_URL_ENV.replace(/\/$/, '');
   const host  = req.headers['x-forwarded-host'] || req.headers.host;
   const proto = req.headers['x-forwarded-proto'] || (host && host.includes('localhost') ? 'http' : 'https');
   return `${proto}://${host}`;
@@ -106,6 +107,18 @@ const AccessRequestSchema = new mongoose.Schema({
   created_at:   { type: Date, default: Date.now },
 });
 const AccessRequest = mongoose.models.AojAccessRequest || mongoose.model('AojAccessRequest', AccessRequestSchema);
+
+// One-time secure tokens for the 3 email approval URLs.
+// tokenHash = sha256 of raw random token. Raw token never stored.
+const ActionTokenSchema = new mongoose.Schema({
+  requestId:  { type: mongoose.Schema.Types.ObjectId, ref: 'AojAccessRequest', index: true },
+  action:     { type: String, enum: ['viewer','editor','denied'] },
+  token_hash: { type: String, unique: true, index: true },
+  expires_at: { type: Date, index: true },
+  used_at:    Date,
+  created_at: { type: Date, default: Date.now },
+});
+const ActionToken = mongoose.models.AojActionToken || mongoose.model('AojActionToken', ActionTokenSchema);
 
 const AuditLogSchema = new mongoose.Schema({
   email: String, role: String, action: String, target: String,
@@ -465,8 +478,21 @@ module.exports = async (req, res) => {
       const p = await Project.findOne({ slug, active: true }).lean();
       if (!p) return json(res, 404, { error: 'Not found' });
       const cats = await Category.find({ projectId: p._id, active: true }).sort({ sort: 1 }).lean();
+      const currentUser = await getSessionUser(req);
+      const canSeeConfidential = currentUser?.role === 'admin' || ['viewer','editor','admin'].includes(currentUser?.access_level);
       const grouped = { confidential: [], logs: [], softcopies: [] };
-      for (const c of cats) if (grouped[c.section]) grouped[c.section].push(c);
+      for (const c of cats) {
+        if (!grouped[c.section]) continue;
+        // CRITICAL: strip drive_url and drive_type from confidential categories for unauthorized users.
+        if (c.section === 'confidential' && !canSeeConfidential) {
+          grouped.confidential.push({
+            _id: c._id, projectId: c.projectId, section: c.section, name: c.name,
+            sort: c.sort, active: c.active, drive_url: null, drive_type: null,
+          });
+        } else {
+          grouped[c.section].push(c);
+        }
+      }
       return json(res, 200, { project: p, categories: grouped });
     }
 
@@ -487,24 +513,50 @@ module.exports = async (req, res) => {
         pageSize: 40, orderBy: 'modifiedTime desc',
         supportsAllDrives: true, includeItemsFromAllDrives: true,
       });
-      const cats = await Category.find({ drive_url: { $ne: null } }).lean();
-      const confidentialIds = new Set(cats.filter(c => c.section === 'confidential').map(c => extractDriveId(c.drive_url)).filter(Boolean));
+      const cats = await Category.find({ drive_url: { $ne: null }, active: true }).lean();
+      const confidentialRoots = cats.filter(c => c.section === 'confidential').map(c => extractDriveId(c.drive_url)).filter(Boolean);
+      const confidentialSet   = new Set(confidentialRoots);
 
-      const parentIds = [...new Set(list.data.files.flatMap(f => f.parents || []))].slice(0, 30);
-      const parentMap = {};
-      await Promise.all(parentIds.map(async pid => {
-        try { const md = await drive.files.get({ fileId: pid, fields: 'id,name', supportsAllDrives: true }); parentMap[pid] = md.data.name; }
-        catch (_) {}
-      }));
-      const items = list.data.files.map(f => {
-        const inConf = (f.parents || []).some(p => confidentialIds.has(p));
-        const restricted = inConf && !canSeeConfidential;
-        return {
+      // Walk each file's ancestor chain (cached) to determine if it descends from any confidential folder.
+      const parentNameCache = {}, parentParentsCache = {};
+      async function getParents(fileId) {
+        if (parentParentsCache[fileId] !== undefined) return parentParentsCache[fileId];
+        try {
+          const md = await drive.files.get({ fileId, fields: 'id,name,parents', supportsAllDrives: true });
+          parentNameCache[fileId] = md.data.name;
+          parentParentsCache[fileId] = md.data.parents || [];
+          return parentParentsCache[fileId];
+        } catch (_) { parentParentsCache[fileId] = []; return []; }
+      }
+      async function isDescendantOfConfidential(fileParents) {
+        if (!fileParents || !fileParents.length) return false;
+        const stack = [...fileParents];
+        const seen = new Set();
+        while (stack.length) {
+          const id = stack.pop();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          if (confidentialSet.has(id)) return true;
+          const grandparents = await getParents(id);
+          for (const g of grandparents) if (!seen.has(g)) stack.push(g);
+          if (seen.size > 50) break; // safety cap
+        }
+        return false;
+      }
+
+      const items = [];
+      for (const f of list.data.files) {
+        const inConf = await isDescendantOfConfidential(f.parents || []);
+        if (inConf && !canSeeConfidential) continue; // CRITICAL: fully exclude, do not leak name
+        const folderId = f.parents && f.parents[0];
+        const folderName = folderId ? (parentNameCache[folderId] || (await getParents(folderId), parentNameCache[folderId])) : null;
+        items.push({
           ...mapFile(f),
-          folder: (f.parents && parentMap[f.parents[0]]) || null,
-          restricted, link: restricted ? null : (f.webViewLink || null),
-        };
-      });
+          folder: folderName || null,
+          confidential: inConf,
+          link: (inConf && !canSeeConfidential) ? null : (f.webViewLink || null),
+        });
+      }
       return json(res, 200, { q, count: items.length, items });
     }
 
@@ -513,17 +565,23 @@ module.exports = async (req, res) => {
     // ────────────────────────────────────────────────────────────────────────
     if (action === 'request_access' && req.method === 'POST') {
       const { email, name, projectId, categoryId, section, note, requested_level } = body || {};
-      if (!email) return json(res, 400, { error: 'Email is required.' });
+      if (!email || !String(email).includes('@')) return json(res, 400, { error: 'Valid email is required.' });
       const cleanEmail = String(email).toLowerCase().trim();
       const level = (requested_level === 'editor') ? 'editor' : 'viewer';
       const proj = projectId ? await Project.findById(projectId) : null;
       const cat  = categoryId ? await Category.findById(categoryId) : null;
 
-      // De-dupe pending requests
+      // If the email already has confidential access, no request needed
+      const alreadyUser = await User.findOne({ email: cleanEmail });
+      if (alreadyUser && ['viewer','editor','admin'].includes(alreadyUser.access_level)) {
+        return json(res, 200, { ok: true, already_approved: true, message: 'You already have access. Please sign in.' });
+      }
+
+      // De-dupe pending
       const existing = await AccessRequest.findOne({
         email: cleanEmail, projectId: projectId || null, categoryId: categoryId || null, status: 'pending',
       });
-      if (existing) return json(res, 200, { ok: true, existing: true });
+      if (existing) return json(res, 200, { ok: true, existing: true, message: 'You already have a pending request for this file.' });
 
       const rq = await AccessRequest.create({
         email: cleanEmail, name: name || '', projectId: projectId || null,
@@ -532,12 +590,20 @@ module.exports = async (req, res) => {
       });
       await audit(req, { email: cleanEmail }, 'access_request', String(rq._id), { level });
 
-      // Build one-click approval URLs (JWT signed, 30-day expiry)
+      // Generate 3 cryptographically random one-time tokens (never store raw)
+      const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+      const mkTok = async (a) => {
+        const raw = crypto.randomBytes(32).toString('hex');
+        await ActionToken.create({
+          requestId: rq._id, action: a, token_hash: sha(raw),
+          expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        });
+        return raw;
+      };
       const base = getBaseURL(req);
-      const mkTok = (d) => jwt.sign({ rq: String(rq._id), d }, JWT_SECRET, { expiresIn: '30d' });
-      const urlView = `${base}/api/drive?action=decide&t=${mkTok('viewer')}`;
-      const urlEdit = `${base}/api/drive?action=decide&t=${mkTok('editor')}`;
-      const urlDeny = `${base}/api/drive?action=decide&t=${mkTok('denied')}`;
+      const urlView = `${base}/api/drive?action=decide&t=${await mkTok('viewer')}`;
+      const urlEdit = `${base}/api/drive?action=decide&t=${await mkTok('editor')}`;
+      const urlDeny = `${base}/api/drive?action=decide&t=${await mkTok('denied')}`;
 
       const html = emailTemplate({
         title: `🔑 New confidential access request`,
@@ -559,24 +625,35 @@ module.exports = async (req, res) => {
       return json(res, 200, { ok: true, message: 'Request submitted. The administrator has been notified.' });
     }
 
-    // One-click approval from email (returns pretty JSON page)
+    // One-click approval from email — DB-backed single-use tokens
     if (action === 'decide' && req.method === 'GET') {
       const t = url.searchParams.get('t');
-      if (!t) return json(res, 400, { error: 'Missing token' });
-      let payload;
-      try { payload = jwt.verify(t, JWT_SECRET); }
-      catch (_) { return json(res, 401, { error: 'Invalid or expired approval link' }); }
+      if (!t || t.length < 20) return renderDecisionPage(res, 'error', 'Invalid approval link.');
+      const tokenHash = crypto.createHash('sha256').update(t).digest('hex');
+      const tok = await ActionToken.findOne({ token_hash: tokenHash });
+      if (!tok) return renderDecisionPage(res, 'error', 'Invalid approval link.');
+      if (tok.used_at) return renderDecisionPage(res, 'error', 'This approval link has already been used.');
+      if (tok.expires_at && tok.expires_at < new Date()) return renderDecisionPage(res, 'error', 'This approval link has expired.');
 
-      const rq = await AccessRequest.findById(payload.rq);
-      if (!rq) return json(res, 404, { error: 'Request not found' });
+      const rq = await AccessRequest.findById(tok.requestId);
+      if (!rq) return renderDecisionPage(res, 'error', 'Access request not found.');
       if (rq.status !== 'pending') {
-        return json(res, 200, { ok: true, already: true, status: rq.status, email: rq.email });
+        // Consume the token so it can't be reused
+        tok.used_at = new Date(); await tok.save();
+        return renderDecisionPage(res, 'info', `This request has already been processed (status: ${rq.status}).`);
       }
 
-      const decision = payload.d;
+      const decision = tok.action;
       rq.status = decision;
       rq.decided_by = 'email-link'; rq.decided_at = new Date();
       await rq.save();
+
+      // Invalidate all sibling tokens for this request (single-decision)
+      tok.used_at = new Date(); await tok.save();
+      await ActionToken.updateMany(
+        { requestId: rq._id, _id: { $ne: tok._id }, used_at: null },
+        { $set: { used_at: new Date() } }
+      );
 
       // Update user record + share Drive item if approved
       if (decision === 'viewer' || decision === 'editor') {
@@ -613,15 +690,11 @@ module.exports = async (req, res) => {
       }
       await audit(req, { email: 'email-link' }, 'decide_' + decision, String(rq._id), {});
 
-      // Return a friendly HTML confirmation
-      const map = { viewer: ['Viewer access granted', '#067647'], editor: ['Editor access granted', '#175cd3'], denied: ['Request denied', '#b42318'] };
-      const [msg, color] = map[decision] || ['Decision recorded', '#444'];
-      res.statusCode = 200; res.setHeader('Content-Type', 'text/html');
-      return res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${msg}</title>
-        <style>body{font-family:-apple-system,Segoe UI,sans-serif;background:#f5f6fa;margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;} .card{background:#fff;border-radius:14px;padding:36px;max-width:440px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.08);} .dot{width:64px;height:64px;border-radius:50%;background:${color};color:#fff;display:grid;place-items:center;font-size:32px;margin:0 auto 20px;} h1{margin:0 0 10px;font-size:22px;} p{color:#666;margin:0 0 20px;} pre{background:#f5f6fa;padding:14px;border-radius:8px;text-align:left;font-size:12px;overflow:auto;}</style></head>
-        <body><div class="card"><div class="dot">${decision==='denied'?'✗':'✓'}</div><h1>${msg}</h1><p>Request for <b>${escapeHtml(rq.email)}</b> has been marked as <b>${decision}</b>.</p>
-        <pre>${escapeHtml(JSON.stringify({ ok: true, request_id: String(rq._id), email: rq.email, decision, decided_at: new Date().toISOString() }, null, 2))}</pre>
-        </div></body></html>`);
+      const map = { viewer: ['Viewer access granted', '#067647'], editor: ['Editor access granted', '#175cd3'], denied: ['Request rejected', '#b42318'] };
+      const [msg] = map[decision] || ['Decision recorded'];
+      return renderDecisionPage(res, decision === 'denied' ? 'reject' : decision, msg, {
+        email: rq.email, decision, request_id: String(rq._id), decided_at: new Date().toISOString(),
+      });
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -832,6 +905,44 @@ module.exports = async (req, res) => {
       return json(res, 200, { user: saved });
     }
 
+    // List permissions on a Drive file/folder (admin only)
+    if (action === 'admin_permissions_list' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const m = await getMasterDrive(req); if (!m) return json(res, 400, { error: 'Master Drive not connected' });
+      const fileId = url.searchParams.get('fileId');
+      if (!fileId) return json(res, 400, { error: 'fileId required' });
+      try {
+        const r = await m.drive.permissions.list({
+          fileId, supportsAllDrives: true,
+          fields: 'permissions(id,type,role,emailAddress,displayName)',
+        });
+        return json(res, 200, { permissions: r.data.permissions || [] });
+      } catch (e) { return json(res, 500, { error: e.message }); }
+    }
+
+    // Change an existing Drive permission's role
+    if (action === 'admin_permission_update' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const m = await getMasterDrive(req); if (!m) return json(res, 400, { error: 'Master Drive not connected' });
+      const { fileId, permissionId, role } = body || {};
+      if (!fileId || !permissionId || !role) return json(res, 400, { error: 'fileId, permissionId, role required' });
+      const driveRole = role === 'editor' ? 'writer' : 'reader';
+      await m.drive.permissions.update({ fileId, permissionId, requestBody: { role: driveRole }, supportsAllDrives: true });
+      await audit(req, u, 'permission_update', permissionId, { role });
+      return json(res, 200, { ok: true });
+    }
+
+    // Remove a Drive permission
+    if (action === 'admin_permission_delete' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const m = await getMasterDrive(req); if (!m) return json(res, 400, { error: 'Master Drive not connected' });
+      const { fileId, permissionId } = body || {};
+      if (!fileId || !permissionId) return json(res, 400, { error: 'fileId and permissionId required' });
+      await m.drive.permissions.delete({ fileId, permissionId, supportsAllDrives: true });
+      await audit(req, u, 'permission_delete', permissionId, { fileId });
+      return json(res, 200, { ok: true });
+    }
+
     // Admin grants access directly by email (no request needed)
     if (action === 'admin_grant_access' && req.method === 'POST') {
       const u = await guard(); if (!u) return;
@@ -911,4 +1022,20 @@ module.exports = async (req, res) => {
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function renderDecisionPage(res, kind, msg, payload) {
+  const colors = { viewer: '#067647', editor: '#175cd3', reject: '#b42318', error: '#b42318', info: '#667085' };
+  const icons  = { viewer: '✓', editor: '✎', reject: '✗', error: '!', info: 'i' };
+  const c = colors[kind] || '#667085', ic = icons[kind] || 'i';
+  const jsonBlock = payload ? `<pre style="background:#eef2f8;padding:14px;border-radius:10px;text-align:left;font-size:11.5px;overflow:auto;margin-top:18px;">${escapeHtml(JSON.stringify({ ok: kind !== 'error', ...payload }, null, 2))}</pre>` : '';
+  res.statusCode = 200; res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(msg)}</title>
+    <style>
+      body{font-family:-apple-system,Segoe UI,sans-serif;background:#e8ecf3;margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;color:#0d1626;}
+      .card{background:#eef2f8;border-radius:20px;padding:38px;max-width:460px;width:100%;text-align:center;box-shadow:8px 8px 20px rgba(163,177,198,0.55),-8px -8px 20px rgba(255,255,255,0.9);}
+      .dot{width:72px;height:72px;border-radius:50%;background:${c};color:#fff;display:grid;place-items:center;font-size:36px;font-weight:800;margin:0 auto 20px;box-shadow:4px 4px 10px rgba(163,177,198,0.5),-4px -4px 10px rgba(255,255,255,0.9);}
+      h1{margin:0 0 10px;font-size:22px;letter-spacing:-0.02em;} p{color:#667085;margin:0;font-size:14.5px;}
+    </style></head>
+    <body><div class="card"><div class="dot">${ic}</div><h1>${escapeHtml(msg)}</h1>${jsonBlock}</div></body></html>`);
 }
