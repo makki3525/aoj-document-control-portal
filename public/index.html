@@ -114,7 +114,14 @@
     document.getElementById('nav-slot').innerHTML = renderNav('home');
     document.getElementById('foot-slot').innerHTML = renderFooter();
     document.getElementById('searchIcon').innerHTML = ICONS.search;
-    refreshAuthArea();
+    (async () => {
+      const me = await requireAuth();
+      if (!me) return;
+      refreshAuthArea();
+      initHome();
+    })();
+
+    function initHome() {
 
     // Feature icons
     document.querySelectorAll('.feature-icon').forEach((el, i) => {
@@ -146,6 +153,7 @@
     // Flags
     const p = new URLSearchParams(location.search);
     if (p.get('err')) toast('Sign-in error: ' + p.get('err'), 'err');
+    } // end initHome
   </script>
 </body>
 </html>

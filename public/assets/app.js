@@ -44,12 +44,35 @@ async function apiGet(action, params = {}) {
   return r.json();
 }
 async function apiPost(action, body = {}) {
-  const r = await fetch(`${API}?action=${action}`, {
-    method: 'POST', credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return r.json();
+  try {
+    const r = await fetch(`${API}?action=${action}`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    try { return JSON.parse(text); }
+    catch (_) { return { error: `Server error (${r.status}): ${text.slice(0, 200)}` }; }
+  } catch (e) {
+    return { error: 'Network error: ' + e.message };
+  }
+}
+
+// Guard: require signed-in user on protected pages. Redirects to /login if not.
+async function requireAuth() {
+  try {
+    const me = await apiGet('me');
+    window.__me = me;
+    if (!me.connected) {
+      const ret = encodeURIComponent(location.pathname + location.search);
+      location.href = '/login?return=' + ret;
+      return null;
+    }
+    return me;
+  } catch (_) {
+    location.href = '/login';
+    return null;
+  }
 }
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));

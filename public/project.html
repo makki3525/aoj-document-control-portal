@@ -64,13 +64,13 @@
     document.getElementById('foot-slot').innerHTML = renderFooter();
     document.getElementById('searchIcon').innerHTML = ICONS.search;
     document.querySelector('#reqModal .modal-head .icon-btn').innerHTML = ICONS.x;
-    refreshAuthArea();
 
     const slug = location.pathname.split('/').filter(Boolean).pop();
     let project = null, categories = null, me = null;
 
     (async () => {
-      me = await apiGet('me');
+      me = await requireAuth(); if (!me) return;
+      refreshAuthArea();
       const r = await apiGet('project', { slug });
       if (r.error) {
         document.body.innerHTML = `<div class="empty" style="padding:120px;">
@@ -150,8 +150,7 @@
         const restricted = section.key === 'confidential' && !canOpenConf;
 
         if (restricted) {
-          // Backend has already stripped drive_url. Show button that opens request modal only.
-          return `<button class="cat-btn locked" onclick="openReq('${c._id}', ${JSON.stringify(c.name).slice(1,-1)}, '${section.key}')">
+          return `<button class="cat-btn locked js-req" data-id="${escapeHtml(c._id)}" data-name="${escapeHtml(c.name)}" data-section="${escapeHtml(section.key)}">
             <div class="ico">${ICONS.lock}</div>
             <div class="body"><b>${escapeHtml(c.name)}</b><small>Request access</small></div>
             <div class="go">${ICONS.chevron}</div>
@@ -170,6 +169,14 @@
         </a>`;
       }).join('')}</div>`;
     }
+
+    // Delegated click for restricted category buttons (survives re-renders and escaping)
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('.js-req');
+      if (!b) return;
+      e.preventDefault();
+      openReq(b.dataset.id, b.dataset.name, b.dataset.section);
+    });
 
     // Access request modal — email-based (no login required)
     let currentReq = null;

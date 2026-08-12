@@ -37,16 +37,16 @@
   <script>
     document.getElementById('nav-slot').innerHTML = renderNav('projects');
     document.getElementById('foot-slot').innerHTML = renderFooter();
-    refreshAuthArea();
 
     let all = [], filter = 'all';
-    const grid = document.getElementById('grid'), q = document.getElementById('q');
 
     (async () => {
+      const me = await requireAuth(); if (!me) return;
+      refreshAuthArea();
       const r = await apiGet('projects');
-      all = r.projects || [];
-      render();
+      all = r.projects || []; render();
     })();
+    const grid = document.getElementById('grid'), q = document.getElementById('q');
 
     function render() {
       const t = q.value.trim().toLowerCase();
