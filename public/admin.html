@@ -38,7 +38,7 @@
 
     // Entry point: check current user
     (async () => {
-      const me = await apiGet('me');
+      const me = await apiGet('admin_me');
       if (me.connected && me.role === 'admin') { renderPanel(); }
       else { renderLogin(); }
 
@@ -118,7 +118,7 @@
       showTab('dash');
     }
 
-    async function signOut() { await apiGet('logout'); location.reload(); }
+    async function signOut() { await apiGet('admin_logout'); location.reload(); }
     window.signOut = signOut;
 
     async function safeCall(fn, m) {

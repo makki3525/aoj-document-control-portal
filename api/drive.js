@@ -41,7 +41,8 @@ function getBaseURL(req) {
 function getRedirectURI(req) { return `${getBaseURL(req)}/api/drive?action=oauth_callback`; }
 
 const ALGO        = 'aes-256-cbc';
-const COOKIE_NAME = 'aoj_sid';
+const COOKIE_NAME       = 'aoj_sid';    // public users
+const ADMIN_COOKIE_NAME = 'aoj_admin';  // admin panel (separate!)
 const MASTER_EMAIL = 'master-admin@aoj.local';
 
 // ─── DB ──────────────────────────────────────────────────────────────────────
@@ -120,6 +121,20 @@ const ActionTokenSchema = new mongoose.Schema({
 });
 const ActionToken = mongoose.models.AojActionToken || mongoose.model('AojActionToken', ActionTokenSchema);
 
+// Per-file grants — replaces the old broad user.access_level model.
+// Each grant scopes a single category (folder/file) to one email.
+const FileGrantSchema = new mongoose.Schema({
+  email:         { type: String, index: true, lowercase: true, trim: true },
+  categoryId:    { type: mongoose.Schema.Types.ObjectId, ref: 'AojCategory', index: true },
+  drive_file_id: String,
+  role:          { type: String, enum: ['viewer','editor'] },
+  drive_permission_id: String,
+  granted_by:    String,
+  granted_at:    { type: Date, default: Date.now },
+});
+FileGrantSchema.index({ email: 1, categoryId: 1 }, { unique: true });
+const FileGrant = mongoose.models.AojFileGrant || mongoose.model('AojFileGrant', FileGrantSchema);
+
 const AuditLogSchema = new mongoose.Schema({
   email: String, role: String, action: String, target: String,
   meta: mongoose.Schema.Types.Mixed, ip: String, ua: String,
@@ -139,24 +154,28 @@ function decrypt(text) {
   const d  = crypto.createDecipheriv(ALGO, Buffer.from(ENC_KEY, 'base64'), iv);
   return Buffer.concat([d.update(Buffer.from(encHex, 'hex')), d.final()]).toString('utf8');
 }
-function issueSession(res, userId, req) {
-  const token = jwt.sign({ uid: String(userId) }, JWT_SECRET, { expiresIn: '30d' });
+function setCookie(res, name, val, maxAge, req) {
   const secure = getRedirectURI(req).startsWith('https://');
-  res.setHeader('Set-Cookie', cookie.serialize(COOKIE_NAME, token, {
-    httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: 60 * 60 * 24 * 30,
-  }));
+  const prev   = res.getHeader('Set-Cookie');
+  const c = cookie.serialize(name, val, { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge });
+  res.setHeader('Set-Cookie', prev ? [].concat(prev, c) : c);
 }
-function clearSession(res) {
-  res.setHeader('Set-Cookie', cookie.serialize(COOKIE_NAME, '', { httpOnly: true, path: '/', maxAge: 0 }));
-}
-async function getSessionUser(req) {
-  const raw = req.headers.cookie ? cookie.parse(req.headers.cookie)[COOKIE_NAME] : null;
+function issueSession(res, userId, req)      { setCookie(res, COOKIE_NAME, jwt.sign({ uid: String(userId), k: 'pub' }, JWT_SECRET, { expiresIn: '30d' }), 60*60*24*30, req); }
+function issueAdminSession(res, userId, req) { setCookie(res, ADMIN_COOKIE_NAME, jwt.sign({ uid: String(userId), k: 'adm' }, JWT_SECRET, { expiresIn: '30d' }), 60*60*24*30, req); }
+function clearSession(res)      { setCookie(res, COOKIE_NAME, '', 0, { headers: {} }); }
+function clearAdminSession(res) { setCookie(res, ADMIN_COOKIE_NAME, '', 0, { headers: {} }); }
+
+async function readTokenUser(req, cookieName, requiredKind) {
+  const raw = req.headers.cookie ? cookie.parse(req.headers.cookie)[cookieName] : null;
   if (!raw) return null;
   try {
-    const { uid } = jwt.verify(raw, JWT_SECRET);
-    return await User.findById(uid);
+    const p = jwt.verify(raw, JWT_SECRET);
+    if (requiredKind && p.k !== requiredKind) return null;
+    return await User.findById(p.uid);
   } catch (_) { return null; }
 }
+async function getSessionUser(req) { return readTokenUser(req, COOKIE_NAME, 'pub'); }
+async function getAdminUser(req)   { return readTokenUser(req, ADMIN_COOKIE_NAME, 'adm'); }
 
 // ─── Google Drive helpers ────────────────────────────────────────────────────
 function oauthClient(req) { return new google.auth.OAuth2(GOOGLE_ID, GOOGLE_SECRET, getRedirectURI(req)); }
@@ -224,12 +243,16 @@ async function setPrivate(drive, fileId) {
 // Share a file with a specific email (viewer/editor)
 async function shareWithEmail(drive, fileId, email, role) {
   try {
-    await drive.permissions.create({
+    const r = await drive.permissions.create({
       fileId, supportsAllDrives: true, sendNotificationEmail: true,
+      fields: 'id,emailAddress,role',
       requestBody: { type: 'user', role: role === 'editor' ? 'writer' : 'reader', emailAddress: email },
     });
-    return { ok: true };
-  } catch (e) { return { ok: false, error: e.message }; }
+    return { ok: true, permissionId: r.data.id };
+  } catch (e) {
+    console.error('[shareWithEmail]', email, fileId, e.message);
+    return { ok: false, error: e.message };
+  }
 }
 // Remove a specific email from a file's permissions
 async function unshareEmail(drive, fileId, email) {
@@ -452,7 +475,7 @@ module.exports = async (req, res) => {
     }
     if (action === 'logout') { clearSession(res); return json(res, 200, { ok: true }); }
 
-    // Master admin (username/password) login
+    // Master admin (username/password) login — writes SEPARATE admin cookie
     if (action === 'admin_login' && req.method === 'POST') {
       const { username, password } = body || {};
       if (username !== MASTER_ADMIN_USER || password !== MASTER_ADMIN_PASS) {
@@ -461,10 +484,17 @@ module.exports = async (req, res) => {
       let u = await User.findOne({ email: MASTER_EMAIL });
       if (!u) u = await User.create({ email: MASTER_EMAIL, name: 'Master Admin', role: 'admin', approved: true, access_level: 'admin' });
       else if (u.role !== 'admin') { u.role = 'admin'; u.approved = true; u.access_level = 'admin'; await u.save(); }
-      issueSession(res, u._id, req);
+      issueAdminSession(res, u._id, req);
       await audit(req, u, 'admin_login', 'master', {});
       return json(res, 200, { ok: true });
     }
+    // Admin-only /me + logout — read the admin cookie
+    if (action === 'admin_me' && req.method === 'GET') {
+      const u = await getAdminUser(req);
+      if (!u) return json(res, 200, { connected: false });
+      return json(res, 200, { connected: true, email: u.email, name: u.name, role: u.role });
+    }
+    if (action === 'admin_logout') { clearAdminSession(res); return json(res, 200, { ok: true }); }
 
     // ────────────────────────────────────────────────────────────────────────
     // PUBLIC — projects + search
@@ -479,19 +509,29 @@ module.exports = async (req, res) => {
       if (!p) return json(res, 404, { error: 'Not found' });
       const cats = await Category.find({ projectId: p._id, active: true }).sort({ sort: 1 }).lean();
       const currentUser = await getSessionUser(req);
-      const canSeeConfidential = currentUser?.role === 'admin' || ['viewer','editor','admin'].includes(currentUser?.access_level);
+
+      // Look up per-file grants for this user's email in one query
+      const grantedCatIds = new Set();
+      if (currentUser?.email) {
+        const grants = await FileGrant.find({ email: currentUser.email }).select('categoryId').lean();
+        grants.forEach(g => grantedCatIds.add(String(g.categoryId)));
+      }
+
       const grouped = { confidential: [], logs: [], softcopies: [] };
       for (const c of cats) {
         if (!grouped[c.section]) continue;
-        // CRITICAL: strip drive_url and drive_type from confidential categories for unauthorized users.
-        if (c.section === 'confidential' && !canSeeConfidential) {
-          grouped.confidential.push({
-            _id: c._id, projectId: c.projectId, section: c.section, name: c.name,
-            sort: c.sort, active: c.active, drive_url: null, drive_type: null,
-          });
-        } else {
-          grouped[c.section].push(c);
+        if (c.section === 'confidential') {
+          const hasGrant = grantedCatIds.has(String(c._id));
+          if (!hasGrant) {
+            // Strip URL — user hasn't been granted this specific file
+            grouped.confidential.push({
+              _id: c._id, projectId: c.projectId, section: c.section, name: c.name,
+              sort: c.sort, active: c.active, drive_url: null, drive_type: null,
+            });
+            continue;
+          }
         }
+        grouped[c.section].push(c);
       }
       return json(res, 200, { project: p, categories: grouped });
     }
@@ -503,7 +543,15 @@ module.exports = async (req, res) => {
       if (!m) return json(res, 200, { items: [], q, error: 'The administrator has not connected a Google Drive yet.' });
       const drive = m.drive;
       const currentUser = await getSessionUser(req);
-      const canSeeConfidential = currentUser?.role === 'admin' || ['viewer','editor','admin'].includes(currentUser?.access_level);
+      // Per-file: user can see confidential files ONLY inside categories they've been granted
+      let grantedConfIds = new Set();
+      if (currentUser?.email) {
+        const cats2 = await Category.find({ section: 'confidential' }).lean();
+        const grants = await FileGrant.find({ email: currentUser.email }).select('categoryId').lean();
+        const grantedCatSet = new Set(grants.map(g => String(g.categoryId)));
+        cats2.forEach(c => { if (grantedCatSet.has(String(c._id))) { const fid = extractDriveId(c.drive_url); if (fid) grantedConfIds.add(fid); } });
+      }
+      const isAdmin = currentUser?.role === 'admin';
 
       const safe = q.replace(/'/g, "\\'");
       const query = `(name contains '${safe}' or fullText contains '${safe}') and trashed = false`;
@@ -544,17 +592,32 @@ module.exports = async (req, res) => {
         return false;
       }
 
+      // Which confidential ROOT does this file descend from?
+      async function confidentialAncestor(fileParents) {
+        const stack = [...(fileParents || [])], seen = new Set();
+        while (stack.length) {
+          const id = stack.pop();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          if (confidentialSet.has(id)) return id;
+          const gp = await getParents(id);
+          for (const g of gp) if (!seen.has(g)) stack.push(g);
+          if (seen.size > 50) break;
+        }
+        return null;
+      }
       const items = [];
       for (const f of list.data.files) {
-        const inConf = await isDescendantOfConfidential(f.parents || []);
-        if (inConf && !canSeeConfidential) continue; // CRITICAL: fully exclude, do not leak name
+        const confRoot = await confidentialAncestor(f.parents || []);
+        const isConf = !!confRoot;
+        if (isConf && !isAdmin && !grantedConfIds.has(confRoot)) continue; // exclude entirely
         const folderId = f.parents && f.parents[0];
         const folderName = folderId ? (parentNameCache[folderId] || (await getParents(folderId), parentNameCache[folderId])) : null;
         items.push({
           ...mapFile(f),
           folder: folderName || null,
-          confidential: inConf,
-          link: (inConf && !canSeeConfidential) ? null : (f.webViewLink || null),
+          confidential: isConf,
+          link: f.webViewLink || null,
         });
       }
       return json(res, 200, { q, count: items.length, items });
@@ -655,20 +718,34 @@ module.exports = async (req, res) => {
         { $set: { used_at: new Date() } }
       );
 
-      // Update user record + share Drive item if approved
+      // Per-file grant — grants access ONLY to the specific requested category, not everything.
       if (decision === 'viewer' || decision === 'editor') {
+        // Ensure a portal user exists for this email (so they can sign in)
         let u = await User.findOne({ email: rq.email });
         if (!u) u = await User.create({ email: rq.email, name: rq.name || '' });
-        u.access_level = decision; u.approved = true; await u.save();
 
-        // If category maps to a specific Drive item, share directly with the user
+        let shareResult = null;
+        let driveError = null;
         if (rq.categoryId) {
           const cat = await Category.findById(rq.categoryId);
           const fileId = cat && extractDriveId(cat.drive_url);
           if (fileId) {
             const m = await getMasterDrive(req);
-            if (m) await shareWithEmail(m.drive, fileId, rq.email, decision);
-          }
+            if (m) {
+              shareResult = await shareWithEmail(m.drive, fileId, rq.email, decision);
+              if (!shareResult.ok) driveError = shareResult.error;
+              // Persist grant so project API / search unlock only this category
+              try {
+                await FileGrant.findOneAndUpdate(
+                  { email: rq.email, categoryId: rq.categoryId },
+                  { email: rq.email, categoryId: rq.categoryId, drive_file_id: fileId,
+                    role: decision, drive_permission_id: shareResult?.permissionId || null,
+                    granted_by: 'email-link', granted_at: new Date() },
+                  { upsert: true, new: true }
+                );
+              } catch (e) { console.error('[grant persist]', e.message); }
+            } else driveError = 'Master Drive not connected';
+          } else driveError = 'Category has no Drive URL';
         }
 
         sendEmail({
@@ -676,7 +753,7 @@ module.exports = async (req, res) => {
           subject: `Your access to AOJ Document Control has been approved`,
           html: emailTemplate({
             title: `✓ Access granted`,
-            body: `<p>You now have <b>${decision}</b> access to confidential documents on the AOJ Document Control Portal.</p><p>Sign in at <a href="${getBaseURL(req)}/login" style="color:#b40e2c;">${getBaseURL(req)}/login</a> with the email <b>${escapeHtml(rq.email)}</b>.</p>`,
+            body: `<p>You now have <b>${decision}</b> access to the requested document on the AOJ Document Control Portal.</p><p>The file has been shared with your Google account. You can also open it via the portal at <a href="${getBaseURL(req)}/login" style="color:#b40e2c;">${getBaseURL(req)}/login</a> using the email <b>${escapeHtml(rq.email)}</b>.</p>${driveError ? `<p style="color:#b42318;">⚠ Note: automatic Drive sharing failed (${escapeHtml(driveError)}). The administrator may need to share it manually.</p>` : ''}`,
           }),
         }).catch(() => {});
       } else if (decision === 'denied') {
@@ -701,7 +778,7 @@ module.exports = async (req, res) => {
     // ADMIN — everything below requires role=admin
     // ────────────────────────────────────────────────────────────────────────
     const guard = async () => {
-      const u = await getSessionUser(req);
+      const u = await getAdminUser(req);
       if (!u || u.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return null; }
       return u;
     };
@@ -943,33 +1020,62 @@ module.exports = async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    // Admin grants access directly by email (no request needed)
+    // Admin grants per-file access directly by email
     if (action === 'admin_grant_access' && req.method === 'POST') {
       const u = await guard(); if (!u) return;
       const { email, access_level, categoryId } = body;
       if (!email || !access_level) return json(res, 400, { error: 'email and access_level required' });
+      if (!categoryId) return json(res, 400, { error: 'categoryId required — grants must be per-file' });
       const clean = String(email).toLowerCase().trim();
-      let user = await User.findOne({ email: clean });
-      if (!user) user = await User.create({ email: clean, name: '', access_level, approved: true });
-      else { user.access_level = access_level; user.approved = true; await user.save(); }
 
-      // Share the specific category's Drive item, if any
-      if (categoryId) {
-        const cat = await Category.findById(categoryId);
-        const fileId = cat && extractDriveId(cat.drive_url);
-        if (fileId) {
-          const m = await getMasterDrive(req);
-          if (m) await shareWithEmail(m.drive, fileId, clean, access_level);
-        }
-      }
+      // Ensure portal user record exists so they can sign in
+      let user = await User.findOne({ email: clean });
+      if (!user) user = await User.create({ email: clean, name: '' });
+
+      const cat = await Category.findById(categoryId);
+      const fileId = cat && extractDriveId(cat.drive_url);
+      if (!fileId) return json(res, 400, { error: 'Category has no Drive URL to share' });
+      const m = await getMasterDrive(req);
+      if (!m) return json(res, 400, { error: 'Master Drive not connected' });
+
+      const share = await shareWithEmail(m.drive, fileId, clean, access_level);
+      if (!share.ok) return json(res, 500, { error: 'Drive share failed: ' + share.error });
+
+      await FileGrant.findOneAndUpdate(
+        { email: clean, categoryId },
+        { email: clean, categoryId, drive_file_id: fileId, role: access_level,
+          drive_permission_id: share.permissionId, granted_by: u.email, granted_at: new Date() },
+        { upsert: true, new: true }
+      );
+
       sendEmail({
         to: clean, subject: `You've been granted access to AOJ Document Control`,
         html: emailTemplate({
-          title: `✓ Access granted by administrator`,
-          body: `<p>You've been granted <b>${access_level}</b> access to confidential documents on the AOJ Document Control Portal.</p><p>Sign in at <a href="${getBaseURL(req)}/login" style="color:#b40e2c;">${getBaseURL(req)}/login</a>.</p>`,
+          title: `✓ Access granted`,
+          body: `<p>You've been granted <b>${access_level}</b> access to <b>${escapeHtml(cat.name)}</b>. The file has been shared with your Google account.</p><p>Sign in to the portal at <a href="${getBaseURL(req)}/login" style="color:#b40e2c;">${getBaseURL(req)}/login</a> with the email <b>${escapeHtml(clean)}</b>.</p>`,
         }),
       }).catch(() => {});
       await audit(req, u, 'grant_access', clean, { access_level, categoryId });
+      return json(res, 200, { ok: true });
+    }
+
+    // List all per-file grants (admin)
+    if (action === 'admin_grants' && req.method === 'GET') {
+      const u = await guard(); if (!u) return;
+      const list = await FileGrant.find({}).sort({ granted_at: -1 }).populate('categoryId', 'name section').lean();
+      return json(res, 200, { grants: list });
+    }
+    // Revoke a per-file grant (also removes Drive permission)
+    if (action === 'admin_grant_revoke' && req.method === 'POST') {
+      const u = await guard(); if (!u) return;
+      const g = await FileGrant.findById(body._id);
+      if (!g) return json(res, 404, { error: 'Grant not found' });
+      if (g.drive_file_id && g.drive_permission_id) {
+        const m = await getMasterDrive(req);
+        if (m) try { await m.drive.permissions.delete({ fileId: g.drive_file_id, permissionId: g.drive_permission_id, supportsAllDrives: true }); } catch (e) { console.error('[revoke]', e.message); }
+      }
+      await FileGrant.deleteOne({ _id: g._id });
+      await audit(req, u, 'grant_revoke', g.email, { categoryId: g.categoryId });
       return json(res, 200, { ok: true });
     }
 
@@ -989,13 +1095,27 @@ module.exports = async (req, res) => {
       if ((decision === 'viewer' || decision === 'editor') && r?.email) {
         let usr = await User.findOne({ email: r.email });
         if (!usr) usr = await User.create({ email: r.email, name: r.name || '' });
-        usr.access_level = decision; usr.approved = true; await usr.save();
+        let driveError = null;
         if (r.categoryId) {
           const cat = await Category.findById(r.categoryId);
           const fileId = cat && extractDriveId(cat.drive_url);
-          if (fileId) { const m = await getMasterDrive(req); if (m) await shareWithEmail(m.drive, fileId, r.email, decision); }
+          if (fileId) {
+            const m = await getMasterDrive(req);
+            if (m) {
+              const share = await shareWithEmail(m.drive, fileId, r.email, decision);
+              if (!share.ok) driveError = share.error;
+              await FileGrant.findOneAndUpdate(
+                { email: r.email, categoryId: r.categoryId },
+                { email: r.email, categoryId: r.categoryId, drive_file_id: fileId, role: decision,
+                  drive_permission_id: share.permissionId || null, granted_by: u.email, granted_at: new Date() },
+                { upsert: true, new: true }
+              );
+            } else driveError = 'Master Drive not connected';
+          } else driveError = 'Category has no Drive URL';
         }
-        sendEmail({ to: r.email, subject: 'Your access has been approved', html: emailTemplate({ title: 'Access granted', body: `<p>You now have <b>${decision}</b> access. Sign in at <a href="${getBaseURL(req)}/login">${getBaseURL(req)}/login</a>.</p>` }) }).catch(() => {});
+        sendEmail({ to: r.email, subject: 'Your access has been approved',
+          html: emailTemplate({ title: 'Access granted',
+            body: `<p>You now have <b>${decision}</b> access. Sign in at <a href="${getBaseURL(req)}/login">${getBaseURL(req)}/login</a>.</p>${driveError ? `<p style="color:#b42318;">⚠ Drive share note: ${escapeHtml(driveError)}</p>` : ''}` }) }).catch(() => {});
       }
       await audit(req, u, 'request_' + decision, _id, {});
       return json(res, 200, { request: r });
